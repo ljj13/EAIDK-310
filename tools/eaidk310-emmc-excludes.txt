@@ -1,0 +1,13 @@
+/boot/***
+/dev/***
+/proc/***
+/sys/***
+/run/***
+/tmp/***
+/mnt/***
+/media/***
+/lost+found
+/home/Fog/eaidk310-work/***
+/var/cache/apt/archives/*.deb
+/var/tmp/***
+/var/log/journal/***

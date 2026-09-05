@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "description": "EAIDK-310 Linux 6.8.4 binary recovery baseline",
+  "assets": [
+    {
+      "name": "debian-bookworm-kernel-6.8.4-eaidk-310-rk3328.img.xz",
+      "size": 528959676,
+      "sha256": "23edecf91e089593e0ad5539163e42be3e354c61ddfe11fec8083167900b3a62",
+      "source_url": "https://github.com/yjdwbj/rockchip-eaidk-310/releases/download/v1.0/debian-bookworm-kernel-6.8.4-eaidk-310-rk3328.img.xz",
+      "reproducibility": "binary-recovery"
+    },
+    {
+      "name": "eaidk-310-uboot.img",
+      "size": 16777216,
+      "sha256": "6254986c3e1e12d942d35769a8d8182422a017b6ca392237d0f284b31490a3eb",
+      "source_url": "https://github.com/ljj13/EAIDK-310/releases/download/v2026.09.05/eaidk-310-uboot.img",
+      "reproducibility": "source-rebuild"
+    },
+    {
+      "name": "linux-image-6.8.4-rk3328_6.8.4_arm64.deb",
+      "size": 176271552,
+      "sha256": "a40cf911bbee5ca5adc62eb956febabbc88a90ca3e7a1797b460dcaf4474e830",
+      "source_url": "https://github.com/yjdwbj/rockchip-eaidk-310/releases/download/v1.0/linux-image-6.8.4-rk3328_6.8.4_arm64.deb",
+      "reproducibility": "binary-recovery"
+    },
+    {
+      "name": "linux-headers-6.8.4-rk3328_6.8.4_arm64.deb",
+      "size": 20672,
+      "sha256": "8d4e80c991824e9b913f358e464b9f66e5d288686f75f1495e677833249dc61f",
+      "source_url": "https://github.com/yjdwbj/rockchip-eaidk-310/releases/download/v1.0/linux-headers-6.8.4-rk3328_6.8.4_arm64.deb",
+      "reproducibility": "binary-recovery"
+    }
+  ]
+}

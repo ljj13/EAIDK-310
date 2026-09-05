@@ -1,0 +1,39 @@
+From: EAIDK-310 Linux migration <noreply@openailab.com>
+Subject: [PATCH] arm64: dts: rockchip: register EAIDK-310
+
+Register the native RK3328 EAIDK-310 board DTB and its root compatible.
+The openailab vendor prefix is already present upstream.
+
+---
+ Documentation/devicetree/bindings/arm/rockchip.yaml | 5 +++++
+ arch/arm64/boot/dts/rockchip/Makefile                | 1 +
+ 2 files changed, 6 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/arm/rockchip.yaml b/Documentation/devicetree/bindings/arm/rockchip.yaml
+--- a/Documentation/devicetree/bindings/arm/rockchip.yaml
++++ b/Documentation/devicetree/bindings/arm/rockchip.yaml
+@@ -675,6 +675,11 @@ properties:
+           - const: openailab,eaidk-610
+           - const: rockchip,rk3399
+ 
++      - description: Open AI Lab EAIDK-310
++        items:
++          - const: openailab,eaidk-310
++          - const: rockchip,rk3328
++
+       - description: Xunlong Orange Pi RK3399 board
+         items:
+           - const: xunlong,rk3399-orangepi
+diff --git a/arch/arm64/boot/dts/rockchip/Makefile b/arch/arm64/boot/dts/rockchip/Makefile
+--- a/arch/arm64/boot/dts/rockchip/Makefile
++++ b/arch/arm64/boot/dts/rockchip/Makefile
+@@ -17,6 +17,7 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-odroid-go2.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-odroid-go2-v11.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-odroid-go3.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3328-a1.dtb
++dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3328-eaidk-310.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3328-evb.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3328-nanopi-r2c.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3328-nanopi-r2c-plus.dtb
+-- 
+2.47.2

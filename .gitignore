@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.img
+*.img.xz
+*.iso
+*.deb
+*.tar.zst
+*.key
+authorized_keys
+ssh_host_*_key
+.build/
+.cache/
+release-staging/

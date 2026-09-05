@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.py text eol=lf
+*.dts text eol=lf
+*.dtsi text eol=lf
+*.patch text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

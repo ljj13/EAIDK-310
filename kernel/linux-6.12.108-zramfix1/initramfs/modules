@@ -1,0 +1,2 @@
+# EAIDK-310 early MMC, ext4, regulator, and pinctrl dependencies are built in.
+# Do not list built-in drivers here as loadable modules.

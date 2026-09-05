@@ -1,0 +1,5 @@
+{
+  "repository": "https://github.com/u-boot/u-boot.git",
+  "tag": "v2024.07-rc1",
+  "commit": "38ea74d6d5c05224acdb03f799897c1bdd56f8cc"
+}

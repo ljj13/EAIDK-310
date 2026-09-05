@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "tested_at": "2026-09-05",
+  "installation": {
+    "bundle_sha256": "e61ba8aa0f095658c6557be4ee108a7a31709b65dba81629c621571907a53cfa",
+    "preflight_report_sha256": "253df69450bd19b927212a24faac81000e0f627b114b6a72ce0d102be2018ebf",
+    "apply_report_sha256": "228b101db8c48ad043fdbe84b0982397b0a2247889a9f4e524c5379edd455423",
+    "target_device": "/dev/mmcblk2",
+    "target_model": "HBD08G",
+    "boot_uuid": "cbdb447a-125d-4d30-bc3d-07807a1f4578",
+    "root_uuid": "781e1dc3-166b-46e9-8578-4b9c003d7305",
+    "read_back_verification": "pass"
+  },
+  "independent_boot": {
+    "rescue_tf_present": false,
+    "boot_rom_storage": "emmc",
+    "kernel_release": "6.12.108-eaidk310-zramfix1",
+    "root_source": "/dev/mmcblk2p2",
+    "boot_source": "/dev/mmcblk2p1",
+    "boot_to_login": "pass",
+    "automatic_extlinux_selection": "pass",
+    "extlinux_timeout_deciseconds": 30,
+    "extlinux_sha256": "71827c6b7a541aab098513afec281803e698848d91410935eeef849a925e97cb"
+  },
+  "runtime": {
+    "systemd_state": "running",
+    "failed_units": [],
+    "ssh": "active",
+    "nftables": "active",
+    "ethernet": "up",
+    "zram_service": "active",
+    "zram_algorithm": "lz4",
+    "zram_size_bytes": 402653184,
+    "zram_priority": 100
+  },
+  "rollback": {
+    "directory": "/boot/rollback/6.8.4-pre-6.12.108",
+    "stable_6_8_4_files_present": true,
+    "deployment_report_present": true
+  },
+  "known_non_gating": {
+    "wifi_bluetooth_status_changed": false,
+    "st7789_status_changed": false,
+    "tsadc_ethernet_led_pin_conflict_observed": true,
+    "ethernet_driver_default_delays_observed": true
+  },
+  "acceptance": "pass"
+}

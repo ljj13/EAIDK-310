@@ -1,0 +1,16 @@
+{
+  "kernel_version": "6.12.108",
+  "localversion": "-eaidk310-zramfix1",
+  "expected_release": "6.12.108-eaidk310-zramfix1",
+  "archive_url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.108.tar.xz",
+  "signature_url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.108.tar.sign",
+  "archive_sha256": "e1d1ea200d22d55c9f5d5fae59e69bb3b494515705fc3390cd54231ee4f4baaf",
+  "signer_fingerprint": "647F28654894E3BD457199BE38DBBDC86092693E",
+  "wsl_root": "/home/Fog/eaidk310-kernel",
+  "baseline_files": {
+    "baseline/config-6.8.4-rk3328": "e442fbdda773af2071ddf3682258bde57464fdbd82cf97c187903391b83d3929",
+    "baseline/rk3328-eaidk-310.dtb": "bb3824bc0d07af301413fc2071f76ad4a196da4807ee79c51a6563a480fca614",
+    "baseline/rk3328-eaidk-310.decompiled-6.8.4.dts": "c0e5ad8c724bd65ff2c25663e98efa9b4fdabf56c01284684b39788744a625d5",
+    "baseline/extlinux.conf": "faa10a0d571beeba4bf494791dc35732fdf0dc96319cf181f00277456fb4a095"
+  }
+}

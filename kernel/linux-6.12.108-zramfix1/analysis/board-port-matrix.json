@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "subsystem": "identity",
+      "legacy_path": "/",
+      "upstream_label": "/",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rockchip.yaml"],
+      "disposition": "port",
+      "properties": ["model", "compatible = openailab,eaidk-310 + rockchip,rk3328"],
+      "rationale": "Replace the borrowed Rock64 compatible with an EAIDK-310 board identity while retaining the RK3328 SoC fallback."
+    },
+    {
+      "subsystem": "aliases",
+      "legacy_path": "/aliases",
+      "upstream_label": "/aliases",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328-evb.dts", "rk3328-rock64.dts"],
+      "disposition": "port",
+      "properties": ["ethernet0 = &gmac2phy", "mmc0 = &sdmmc", "mmc1 = &sdio", "mmc2 = &emmc"],
+      "rationale": "Keep stable device numbering, but bind Ethernet to the integrated-PHY MAC that is actually enabled on this board."
+    },
+    {
+      "subsystem": "chosen",
+      "legacy_path": "/chosen",
+      "upstream_label": "/chosen",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328-evb.dts", "rk3328-rock64.dts"],
+      "disposition": "port",
+      "properties": ["stdout-path = serial2:1500000n8"],
+      "rationale": "Preserve the verified 1.5 Mbaud serial console used for recovery and bring-up."
+    },
+    {
+      "subsystem": "cpu-supply",
+      "legacy_path": "/cpus/cpu@0",
+      "upstream_label": "&cpu0, &cpu1, &cpu2, &cpu3",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328-evb.dts", "rk3328-roc-cc.dts"],
+      "disposition": "port",
+      "properties": ["cpu-supply = &vdd_arm"],
+      "rationale": "All four CPU nodes use the RK805 vdd_arm rail in the stable board description and upstream RK3328 board examples."
+    },
+    {
+      "subsystem": "gpu-supply",
+      "legacy_path": "/gpu@ff300000",
+      "upstream_label": "&gpu",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-roc-pc.dts"],
+      "disposition": "port",
+      "properties": ["mali-supply = &vdd_logic"],
+      "rationale": "Retain the stable Mali rail using the current upstream label and the same supply convention used by another RK3328 board."
+    },
+    {
+      "subsystem": "rk805",
+      "legacy_path": "/i2c@ff160000/pmic@18",
+      "upstream_label": "&i2c1 / rk805",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328-evb.dts", "rk3328-roc-cc.dts", "rockchip,rk805.yaml"],
+      "disposition": "port",
+      "properties": ["reg = 0x18", "interrupts = GPIO2_A6 level-low", "rockchip,system-power-controller", "wakeup-source"],
+      "rationale": "The PMIC controls required rails and shutdown; its known IRQ/RTC failure remains documented separately rather than silently changing wiring."
+    },
+    {
+      "subsystem": "regulators",
+      "legacy_path": "/i2c@ff160000/pmic@18/regulators",
+      "upstream_label": "&rk805 / regulators",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328-evb.dts", "rk3328-roc-cc.dts", "rockchip,rk805.yaml"],
+      "disposition": "port",
+      "properties": ["vdd_logic", "vdd_arm", "vcc_ddr", "vcc_io", "vcc_18", "vcc18_emmc", "vdd_10", "vcc_sd", "vcc_host_5v", "vcc_phy"],
+      "rationale": "Recreate the evidenced board power tree with symbolic phandles so CPU, GPU, I/O domains, storage, USB, and Ethernet retain their supplies."
+    },
+    {
+      "subsystem": "io-domains",
+      "legacy_path": "/syscon@ff100000/io-domains",
+      "upstream_label": "&io_domains",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-roc-cc.dts"],
+      "disposition": "port",
+      "properties": ["vccio1 = &vcc_io", "vccio2 = &vcc18_emmc", "vccio3 = &vcc_18", "vccio4 = &vcc_18", "vccio5 = &vcc_io", "vccio6 = &vcc_io", "pmuio = &vcc_io"],
+      "rationale": "Port the stable voltage-domain mapping exactly because incorrect I/O voltages can damage hardware or break buses."
+    },
+    {
+      "subsystem": "sdmmc",
+      "legacy_path": "/mmc@ff500000",
+      "upstream_label": "&sdmmc",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-rock64.dts"],
+      "disposition": "port",
+      "properties": ["bus-width = 4", "cap-sd-highspeed", "sd-uhs-sdr50", "sd-uhs-sdr104", "vmmc-supply = &vcc_sd", "vqmmc-supply = &vccio_sd"],
+      "rationale": "The rescue TF interface is the rollback boundary and must retain the stable controller, pinctrl, and voltage-switching topology."
+    },
+    {
+      "subsystem": "sdio",
+      "legacy_path": "/mmc@ff510000",
+      "upstream_label": "&sdio",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-evb.dts", "mmc-pwrseq-simple.yaml"],
+      "disposition": "port",
+      "properties": ["bus-width = 4", "cap-sdio-irq", "non-removable", "max-frequency = 125000000", "mmc-pwrseq reset = GPIO1_C2 active-low", "Wi-Fi host-wake = GPIO1_C3", "sdmmc_ext status = disabled"],
+      "rationale": "Preserve the evidenced CYW43455 SDIO, reset, and host-wake topology, correct the impossible 1.25 GHz value, and add no unverified external clock or delay."
+    },
+    {
+      "subsystem": "emmc",
+      "legacy_path": "/mmc@ff520000",
+      "upstream_label": "&emmc",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-rock64.dts"],
+      "disposition": "port",
+      "properties": ["bus-width = 8", "cap-mmc-highspeed", "non-removable", "mmc-hs200-1_8v", "vmmc-supply = &vcc_io", "vqmmc-supply = &vcc18_emmc"],
+      "rationale": "Board eMMC is required first for read-only detection and later for boot, using current 6.12 labels and symbolic supplies."
+    },
+    {
+      "subsystem": "gmac2io",
+      "legacy_path": "/ethernet@ff540000",
+      "upstream_label": "&gmac2io",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-rock64.dts"],
+      "disposition": "disable",
+      "properties": ["status = disabled"],
+      "rationale": "The external-PHY MAC is disabled in the stable EAIDK DTB; the working board Ethernet port uses gmac2phy instead."
+    },
+    {
+      "subsystem": "integrated-phy",
+      "legacy_path": "/ethernet@ff550000",
+      "upstream_label": "&gmac2phy",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-evb.dts"],
+      "disposition": "port",
+      "properties": ["phy-mode = rmii", "phy-supply = &vcc_phy", "clock_in_out = output", "assigned-clock-rate = 50000000", "status = okay"],
+      "rationale": "This is the verified active Ethernet MAC and integrated PHY path; upstream RK3328 EVB provides the matching current-style clock configuration."
+    },
+    {
+      "subsystem": "usb2",
+      "legacy_path": "/usb@ff580000",
+      "upstream_label": "&u2phy, &usb20_otg, &usb_host0_ehci, &usb_host0_ohci",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-rock64.dts"],
+      "disposition": "port",
+      "properties": ["dr_mode = host", "vbus-supply = &vcc_host_5v", "EHCI status = okay", "OHCI status = okay"],
+      "rationale": "Preserve the verified host-mode topology for the exposed USB 2 ports and their shared PHY and 5 V supply."
+    },
+    {
+      "subsystem": "usb3",
+      "legacy_path": "/usb@ff600000",
+      "upstream_label": "&usbdrd3",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-rock64.dts"],
+      "disposition": "port",
+      "properties": ["dr_mode = host", "status = okay"],
+      "rationale": "Use the upstream DWC3 node and carry only board mode/status, avoiding obsolete vendor-only quirk copies unless testing proves they are needed."
+    },
+    {
+      "subsystem": "hdmi",
+      "legacy_path": "/hdmi@ff3c0000",
+      "upstream_label": "&hdmi, &hdmiphy",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-rock64.dts"],
+      "disposition": "port",
+      "properties": ["status = okay", "pinctrl-0 = &hdmii2c_xfer"],
+      "rationale": "Retain the stable HDMI output using upstream display pipeline and PHY nodes."
+    },
+    {
+      "subsystem": "drm",
+      "legacy_path": "/vop@ff370000",
+      "upstream_label": "&vop, &vop_mmu",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-rock64.dts"],
+      "disposition": "port",
+      "properties": ["vop status = okay", "vop_mmu status = okay"],
+      "rationale": "Enable the upstream VOP display engine and its IOMMU for the known-good HDMI pipeline."
+    },
+    {
+      "subsystem": "audio",
+      "legacy_path": "/analog-sound",
+      "upstream_label": "&analog_sound, &hdmi_sound, &i2s0, &i2s1, &codec, &spdif, &spdif_sound",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-rock64.dts", "rk3328-roc-cc.dts"],
+      "disposition": "port",
+      "properties": ["analog sound = okay", "HDMI sound = okay", "i2s0 = okay", "codec = okay", "SPDIF sound = disabled"],
+      "rationale": "Preserve the stable analog and HDMI paths while leaving the unused SPDIF card disabled."
+    },
+    {
+      "subsystem": "thermal",
+      "legacy_path": "/tsadc@ff250000",
+      "upstream_label": "&tsadc",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-rock64.dts"],
+      "disposition": "port",
+      "properties": ["rockchip,hw-tshut-mode = 0", "rockchip,hw-tshut-polarity = 0", "status = okay"],
+      "rationale": "Retain the board's hardware thermal-shutdown policy using the upstream TSADC node."
+    },
+    {
+      "subsystem": "gpio-leds",
+      "legacy_path": "/leds",
+      "upstream_label": "/leds, &pinctrl",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328-roc-cc.dts", "leds-gpio.yaml"],
+      "disposition": "port",
+      "properties": ["RK805 power LED", "RK805 user LED", "GPIO2_B5 Ethernet link LED", "GPIO2_B6 Ethernet activity LED"],
+      "rationale": "Keep the board-visible status LEDs and their stable GPIO/polarity assignments with current LED bindings."
+    },
+    {
+      "subsystem": "uart2",
+      "legacy_path": "/serial@ff130000",
+      "upstream_label": "&uart2",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-rock64.dts"],
+      "disposition": "port",
+      "properties": ["status = okay"],
+      "rationale": "UART2 is the verified console and rollback channel, so it is a mandatory built-in bring-up interface."
+    },
+    {
+      "subsystem": "bluetooth",
+      "legacy_path": "/serial@ff110000/bluetooth",
+      "upstream_label": "&uart0 / bluetooth",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "brcm,bluetooth.yaml"],
+      "disposition": "port",
+      "properties": ["compatible = brcm,bcm4345c5", "lpo = RK805 CLKOUT2", "shutdown = GPIO1_C5 active-high", "host-wakeup = GPIO1_D2 active-high", "vbat = &vcc_io", "vddio = &vcc_18"],
+      "rationale": "Retain only the evidenced UART, LPO, reset, wake, and supply topology; Bluetooth functionality remains a non-gating known failure."
+    },
+    {
+      "subsystem": "i2c",
+      "legacy_path": "/i2c@ff160000",
+      "upstream_label": "&i2c0, &i2c1, &i2c2, &i2c3",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "rk3328-evb.dts"],
+      "disposition": "port",
+      "properties": ["i2c1 status = okay", "i2c0 status = disabled", "i2c2 status = disabled", "i2c3 status = disabled"],
+      "rationale": "Enable only I2C1 for the RK805 PMIC and retain the stable disabled state of unused controllers."
+    },
+    {
+      "subsystem": "spi",
+      "legacy_path": "/spi@ff190000",
+      "upstream_label": "&spi0",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "spi-rockchip.yaml"],
+      "disposition": "disable",
+      "properties": ["status = disabled", "no ST7789 child"],
+      "rationale": "The stable base DTB leaves SPI0 disabled; the separate ST7789 experiment is pending physical diagnosis and must not enter the base port."
+    },
+    {
+      "subsystem": "pwm",
+      "legacy_path": "/pwm@ff1b0000",
+      "upstream_label": "&pwm0, &pwm1, &pwm2, &pwm3",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "rk3328.dtsi", "pwm-rockchip.yaml"],
+      "disposition": "disable",
+      "properties": ["pwm0 status = disabled", "pwm1 status = disabled", "pwm2 status = disabled", "pwm3 status = disabled"],
+      "rationale": "All PWM controllers are disabled in the stable base DTB; a future backlight experiment must be a separate opt-in overlay or test DTB."
+    },
+    {
+      "subsystem": "known-failures",
+      "legacy_path": "/",
+      "upstream_label": "/",
+      "reference_files": ["rk3328-eaidk-310.decompiled-6.8.4.dts", "wifi-test1", "wifi-test2", "wifi-test3", "spi-test1", "spi-test2", "spi-test3"],
+      "disposition": "omit-known-failure",
+      "properties": ["Wi-Fi SDIO does not enumerate", "Bluetooth HCI unavailable", "RK805 IRQ34 storm and RTC access hang observed", "ST7789 remains white after three test DTBs"],
+      "rationale": "These observations are preserved as explicit non-success-gates; the native 6.12 base DTS adds no speculative fixes for them."
+    }
+  ]
+}

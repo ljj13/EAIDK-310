@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "tested_at": "2026-09-05",
+  "candidate": {
+    "bundle_sha256": "e61ba8aa0f095658c6557be4ee108a7a31709b65dba81629c621571907a53cfa",
+    "kernel_release": "6.12.108-eaidk310-zramfix1",
+    "boot_to_login": "pass",
+    "root_source": "/dev/mmcblk0p2",
+    "boot_source": "/dev/mmcblk0p1",
+    "emmc_mounted": false,
+    "systemd_state": "running",
+    "failed_units": []
+  },
+  "zram": {
+    "status": "pass",
+    "service": "active",
+    "algorithm": "lz4",
+    "size_bytes": 402649088,
+    "swap_priority": 100
+  },
+  "boot_log": {
+    "panic_or_oops_observed": false,
+    "known_nonblocking_notices": [
+      "TSADC and Ethernet link LED compete for gpio2-13",
+      "Ethernet delay properties are absent and driver defaults are used"
+    ]
+  },
+  "rollback": {
+    "status": "pass",
+    "automatic_default_selection": "rockchip-kernel-6.8.4",
+    "kernel_release": "6.8.4-rk3328",
+    "systemd_state": "running",
+    "failed_units": [],
+    "zram_algorithm": "lz4",
+    "zram_size_bytes": 402649088,
+    "zram_priority": 100
+  },
+  "safety": {
+    "stable_default_preserved": true,
+    "old_6_12_candidate_preserved": true,
+    "emmc_modified": false
+  },
+  "known_non_gating": {
+    "wifi_bluetooth_status_changed": false,
+    "st7789_status_changed": false
+  },
+  "acceptance": "pass"
+}
