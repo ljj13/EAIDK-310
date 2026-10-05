@@ -1,27 +1,46 @@
-# eMMC kernel upgrade and recovery
+# eMMC recovery and rollback models (current)
 
-The stable target is Linux `6.12.108-eaidk310-zramfix1`. It was first validated as a versioned, non-default rescue-TF entry. eMMC promotion uses the same Image, uInitrd, DTB and module tree as one coherent unit.
+## Layer 1 — OTA failure (automatic)
 
-## Promotion safety gates
+A failed candidate kernel rolls back automatically:
 
-Run the board from rescue TF and keep the HBD08G eMMC unmounted. The deployer must verify:
+```text
+candidate failure (panic / hang / userspace failure)
+  → hardware watchdog reset (or panic reset)
+  → raw bootcount exceeds bootlimit=1
+  → altbootcmd → previous known-good (6.12.111) extlinux entry
+  → network + Tailscale recover
+```
 
-- the running root and `/boot` are on the TF, not eMMC;
-- the target device reports HBD08G and matches the recorded capacity;
-- BOOT UUID is `cbdb447a-125d-4d30-bc3d-07807a1f4578`;
-- ROOTFS UUID is `781e1dc3-166b-46e9-8578-4b9c003d7305`;
-- stable 6.8.4 Image, uInitrd, DTB and extlinux hashes still match the preflight baseline;
-- bundle SHA-256 is `e61ba8aa0f095658c6557be4ee108a7a31709b65dba81629c621571907a53cfa`;
-- space is sufficient and no stale temporary or symlink destination exists.
+No operator action is required.  After recovery: `eaidk-ota rollback`
+(records the rollback) and `eaidk-bootstate inspect/clear` to return the
+bootstate to committed/safe.
 
-Run `kernel/linux-6.12.108-zramfix1/scripts/deploy-emmc.sh` without `--apply` first. A real write requires `--apply`, the exact bundle hash and the extlinux hash accepted from that dry-run. The script creates `/boot/rollback/6.8.4-pre-6.12.108/`, uses temporary paths and read-back hashing, writes a coherent extlinux entry with a three-second automatic-selection timeout, and syncs. The operator must then unmount both eMMC filesystems before shutdown.
+## Layer 2 — stable entry broken (manual)
 
-## Runtime acceptance
+If the 6.18.54 stable extlinux entry itself cannot boot (e.g. damaged
+/boot), interrupt U-Boot at the `Hit any key` prompt over serial and
+select the previous known-good entry (6.12.111), then repair /boot or
+re-run the OTA install.  The rescue entry (6.12.108) stays available as
+the last boot-menu choice.
 
-Remove the TF before powering on. Confirm the exact kernel release, eMMC root/boot mount sources, systemd running state, zero blocking failed units, active LZ4 zram at 384 MiB and priority 100, Ethernet/default route and an SSH reconnect using a previously verified host identity.
+## Layer 3 — bootloader failure (on-site)
 
-The recorded no-TF acceptance passed all of those checks. It also captured a complete serial reboot showing U-Boot automatically selecting `rockchip-kernel-6.12.108-eaidk310-zramfix1` after `timeout 30`, without operator input. See `evidence/emmc-6.12.108-zramfix1-acceptance.json`.
+U-Boot/idbloader damage is NOT recoverable remotely:
 
-## Recovery
+1. rescue SD: `boot_targets=mmc1 mmc0 …` scans the SD first; a prepared
+   rescue card boots without touching eMMC
+2. serial console (ttyS2, 1500000 8N1) for U-Boot shell recovery
+3. Maskrom USB recovery (rkdeveloptool) as the last resort
 
-If eMMC does not boot, recreate the 6.8.4 rescue TF using `docs/rescue-tf.md`, start the board from TF, keep eMMC unmounted until identity checks pass, and restore the four boot files/extlinux plus old module information from `/boot/rollback/6.8.4-pre-6.12.108/`. Do not copy only an Image: kernel, initramfs, DTB and modules must remain a matched set.
+Backup before touching the bootloader chain, readback-verify after, and
+never flash without on-site access — see
+[ota/docs/FLASH-PLAN-P36.md](../ota/docs/FLASH-PLAN-P36.md) for the
+region map, checklists and recovery matrix.
+
+## Historical baseline
+
+The 6.8.4 factory image (Git LFS-free copy retained on the v2026.09.05
+GitHub Release) is a **historical recovery baseline**, not a current
+recovery path.  The vendor layout facts extracted from it are documented
+in [vendor/README.md](../vendor/README.md).

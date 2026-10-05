@@ -1,24 +1,25 @@
 # Hardware status
 
-## Validated with Linux 6.12.108 zramfix1
+## Validated with Linux 6.18.54-eaidk310-zramfix1
 
-- Four Cortex-A53 CPUs and approximately 1 GiB RAM
-- TF and HBD08G eMMC enumeration
-- Independent HBD08G eMMC root/boot operation with no TF inserted
-- Ethernet and SSH
-- systemd server boot
-- 384 MiB LZ4 zram, priority 100
-- USB host enumeration
-- HDMI ALSA nodes
-- GPIO and I2C controllers
-- RK805 RTC access improved compared with the 6.8.4 baseline
-- nftables kernel support
-- Automatic extlinux selection of the Linux 6.12.108 eMMC default
+- Four Cortex-A53 CPUs, ~1 GiB RAM
+- HBD08G eMMC (user area + boot partitions) and TF enumeration
+- eMMC-only operation with no TF inserted
+- Ethernet (rk_gmac-dwmac, 100M/1G, zero-error links)
+- USB host enumeration (xHCI/EHCI)
+- zram LZ4 swap (384 MiB)
+- nftables (ruleset loads; iptables-nft compatible)
+- DesignWare hardware watchdog (dw_wdt, 28.6 s max TOP, handoff proven)
+- thermal zones and cpufreq (schedutil) under OTA load and idle
+- RTC-backed time via network sync
+- SSH and Tailscale (auto recovery after every OTA reboot cycle)
+- automatic extlinux default boot of 6.18.54
 
-## Known unresolved paths
+## Known unresolved
 
-- Onboard CYW43455 Wi-Fi does not enumerate as an SDIO function in the current mainline board path; no `wlan` interface is claimed.
-- Bluetooth has no working HCI device. Firmware presence alone does not resolve the missing platform initialization.
-- The external 240×320 ST7789 SPI panel binds and receives SPI traffic in the recorded tests but remains white. Physical wiring, signal integrity and panel-specific initialization remain pending.
-
-These unresolved devices are deliberately non-gating for the kernel/eMMC promotion because they were already unresolved on the accepted baseline. Do not interpret a driver module or device-tree node as proof that the physical device works.
+- Onboard Wi-Fi: the SDIO power-sequencing experiment (failsafe
+  `sdio-handoff` variant) did not restore the CYW43455; no `wlan`
+  interface.  Retained as diagnostic provenance.
+- Bluetooth: depends on the same unresolved Wi-Fi module bring-up.
+- ST7789 display panel: experimental driver test only
+  (see hardware/st7789); not integrated into the boot path.
