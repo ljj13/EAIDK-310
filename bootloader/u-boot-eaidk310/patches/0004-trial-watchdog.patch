@@ -75,7 +75,7 @@ index 0000000..0000000
 +	 */
 +	if (env_get_ulong("upgrade_available", 10, 0) == 1) {
 +		unsigned long bootlimit = env_get_ulong("bootlimit", 10, 0);
-+		unsigned long bc_new = seq + 1;	/* the value just stored */
++		unsigned long bc_new = a & 0xff;	/* the new bootcount value */
 +		if (bootlimit > 0 && bc_new <= bootlimit) {
 +			struct udevice *wdt_dev = NULL;
 +			int rc;

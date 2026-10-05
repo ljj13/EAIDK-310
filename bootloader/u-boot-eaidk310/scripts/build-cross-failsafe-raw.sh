@@ -136,7 +136,7 @@ payload="$output_root/failsafe-raw/u-boot-dtb.bin"
 strings "$payload" | grep -F "EA310BS1" >/dev/null
 strings "$payload" | grep -F "bootcount-raw: identity mismatch" >/dev/null
 strings "$payload" | grep -F "/extlinux/extlinux-candidate.conf" >/dev/null
-strings "$payload" | grep -F "trial watchdog started" >/dev/null
+strings "$payload" | grep -F "trial watchdog via" >/dev/null
 
 audit="$output_root/audit"
 mkdir -p "$audit"
