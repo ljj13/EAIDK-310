@@ -1,0 +1,27 @@
+{
+  "artifact": "p37-watchdog-acceptance",
+  "date": "2026-10-06",
+  "backend": "RAW_REDUNDANT",
+  "watchdog": "DesignWare dw_wdt ff1a0000, TOP15 28.6s @ 75MHz pclk",
+  "arm_policy": "U-Boot bootcount driver starts WDT only on armed candidate trials (increment within bootlimit)",
+  "handoff": "kernel CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED auto-ping -> eaidk-trial-feed userspace feeder",
+  "test_c_true_hang": {
+    "method": "candidate with eaidk_ota_hang_test=1, feeder feeds once then stops",
+    "watchdog_reset": "PASS (serial: WDT Started by U-Boot hook, SoC reset at login prompt)",
+    "raw_rollback": "PASS (bootcount 1->2, altbootcmd -> stable extlinux)",
+    "stable_kernel_after": "6.12.111-eaidk310-zramfix1 (at the time of test; now previous known-good)",
+    "serial_log": "release-evidence asset: serial/p37-test-c-true-hang-watchdog-cycle.log"
+  },
+  "test_d_normal_trial": {
+    "candidate": "6.12.111 with trial marker",
+    "watchdog_not_killed": "PASS (fed throughout, 60s+ stable)",
+    "clean_stop": "magic 'V' only; plain close leaves WDT unfed (fires ~28s) - documented"
+  },
+  "first_ota_incident": {
+    "phase": "userspace",
+    "root_cause": "installer omitted /lib/modules/<release>",
+    "kernel_618_at_fault": false,
+    "fix": "install-candidate deploys module tree atomically with modules.dep check",
+    "rollback_proven": "PASS across a 4-day power-off window (bootcount 1 -> power cycle -> 2 -> stable)"
+  }
+}

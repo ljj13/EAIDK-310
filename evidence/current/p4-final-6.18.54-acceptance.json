@@ -1,0 +1,19 @@
+{
+  "artifact": "p4-final-6.18.54-acceptance",
+  "date": "2026-10-06",
+  "stable_kernel": "6.18.54-eaidk310-zramfix1",
+  "previous_known_good": "6.12.111-eaidk310-zramfix1",
+  "rescue": "6.12.108-eaidk310-zramfix1",
+  "extlinux_default": "rockchip-kernel-6.18.54-eaidk310-zramfix1",
+  "normal_stable_boot": "PASS",
+  "trial_marker_absent": true,
+  "bootstate_after_boot": {"bootcount": 0, "upgrade_available": 0, "state": "committed"},
+  "trial_watchdog_started": false,
+  "modules_persistent": {"path": "/lib/modules/6.18.54-eaidk310-zramfix1", "depmod_unresolved": 0, "zram_modprobe": "OK", "nft_ruleset_lines": 119},
+  "critical_boot_health": "PASS",
+  "remote_health": "PASS",
+  "tailscale_after_reboot": "PASS",
+  "reboot_to_ssh_seconds": 58,
+  "kernels_preserved": {"rescue_108": "91d7688ef30596dc", "pkgood_111": "4be78ad714bbcae2", "stable_618": "f0df140a8f837f2a"},
+  "serial_log": "release-evidence asset: serial/final-stable-618-normal-boot.log"
+}
