@@ -1,0 +1,48 @@
+#!/bin/sh
+# eaidk-trial-feed (P3.7): hardware-watchdog feeder for candidate trial boots.
+#
+# U-Boot starts the trial watchdog ONLY when the raw bootstate confirms a
+# candidate trial (armed, increment within bootlimit).  The running kernel
+# auto-pings the watchdog (CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y) until this
+# service opens /dev/watchdog0; from that moment feeding is ours:
+#   - trial boot (eaidk_ota_trial= in cmdline): feed every 10 s while the
+#     bootstate says upgrade_available=1; exit (which closes the fd and
+#     stops the watchdog) once the trial is committed or cleared.
+#   - TEST C hang injection (eaidk_ota_hang_test=1 also present): feed once,
+#     then deliberately stop feeding while holding the fd open -- the
+#     watchdog fires after its TOP and the SoC resets, bootcount exceeds the
+#     bootlimit, and altbootcmd rolls back to the stable entry.
+#   - any other boot: exit immediately (watchdog is not running).
+cmdline=$(cat /proc/cmdline 2>/dev/null)
+case "$cmdline" in
+  *eaidk_ota_trial=*) ;;
+  *) exit 0 ;;
+esac
+
+[ -c /dev/watchdog0 ] || exit 1
+exec 3>/dev/watchdog0 || exit 1
+printf 'x' >&3 || exit 1
+
+case "$cmdline" in
+  *eaidk_ota_hang_test=1*)
+    echo "eaidk-trial-feed: HANG TEST engaged - feeds stop now, fd stays open"
+    exec /bin/sleep infinity
+    ;;
+esac
+
+while :; do
+  sleep 10
+  upg=$(/usr/local/sbin/eaidk-bootstate inspect --backend raw \
+        --raw-device /dev/mmcblk2 --json 2>/dev/null | \
+        python3 -c 'import json,sys
+print(json.load(sys.stdin).get("upgrade_available"))' 2>/dev/null)
+  if [ "$upg" != "1" ]; then
+    # trial over: magic 'V' then close -- the ONLY clean stop for a
+    # U-Boot-started watchdog.  EMPIRICAL (2026-10-05): a plain close
+    # leaves the WDT running unfed and it fires ~28 s later (SoC reset);
+    # the kernel auto-ping does not resume after the first close.
+    printf 'V' >&3
+    exit 0
+  fi
+  printf 'x' >&3 || exit 1
+done

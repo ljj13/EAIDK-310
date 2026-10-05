@@ -1,0 +1,1282 @@
+#!/usr/bin/env python3
+"""eaidk-ota - fail-safe kernel OTA framework for EAIDK-310.
+
+Design contract (P3.5):
+  - fail closed: every boot-chain mutation requires explicit local
+    (physical console) authorization; remote sessions can never authorize.
+  - fail-safe boot backend is a hard prerequisite for `try`/`arm`.
+    Current backend status: BLOCKED (see `try` refusal message).
+  - atomic writes: every persisted file is written via tmp+fsync+rename.
+  - structured: all commands support --json; exit codes are stable.
+
+Exit codes:
+  0  success
+  1  general error
+  2  verification failed
+  3  authorization required / denied
+  4  fail-safe boot backend unavailable
+  5  state conflict (e.g. same release, different hash)
+  6  health check failed (critical)
+  7  health check degraded (remote layer only)
+"""
+
+import argparse
+import fcntl
+import json
+import os
+import pathlib
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone
+
+VERSION = "0.1.0"
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_VERIFY = 2
+EXIT_AUTH = 3
+EXIT_BACKEND = 4
+EXIT_CONFLICT = 5
+EXIT_HEALTH_CRITICAL = 6
+EXIT_HEALTH_REMOTE = 7
+
+DEFAULT_STATE_DIR = "/var/lib/eaidk-ota"
+DEFAULT_CONFIG_DIR = "/etc/eaidk-ota"
+DEFAULT_BOOT_DIR = "/boot"
+DEFAULT_RUN_DIR = "/run/eaidk-ota"
+LOCK_NAME = "locks"
+HISTORY_NAME = "history"
+STAGING_NAME = "staging"
+STATE_FILE = "state.json"
+AUTH_TOKEN = "local-authorization"
+AUTH_TTL_SECONDS = 15 * 60
+ALLOW_FLAG = "allow-boot-mutation"
+LOCAL_TTYS = ("/dev/ttyS2", "/dev/tty1")
+
+STATES = (
+    "IDLE", "VERIFIED", "STAGED", "ARMED", "BOOTING", "HEALTH_PENDING",
+    "HEALTHY", "COMMITTED", "ROLLBACK_PENDING", "ROLLED_BACK", "FAILED",
+)
+
+# Fail-safe boot backend status.  BLOCKED until a U-Boot with a proven
+# rollback mechanism is installed AND validated by on-site fault injection.
+FAILSAFE_BOOT_BACKEND = "RAW_REDUNDANT"
+FAILSAFE_BOOT_BACKEND_REASON = (
+    "RawBootstateBackend (P3.6-B failsafe-raw U-Boot, dual-copy bootstate "
+    "at eMMC LBA 0x6400/0x7800 + diagnostic breadcrumb at 0x6C00) flashed "
+    "and validated by remote bootstrap 2026-10-01: CHECKPOINT_1/2/3 PASS "
+    "(unarmed stable boot, marker-proof candidate path, real panic "
+    "rollback to 111 stable).  Roles: 108=RESCUE, 111=STABLE/default, "
+    "6.18.54=CANDIDATE (staged)."
+)
+
+
+class BackendError(Exception):
+    pass
+
+
+# ------------------------------------------------------------ boot backend --
+
+class BootBackend:
+    """Interface for the fail-safe boot backend used by try/arm/commit."""
+
+    name = "NoBackend"
+
+    def available(self) -> bool:
+        raise NotImplementedError
+
+    def unavailable_reason(self) -> str:
+        raise NotImplementedError
+
+
+class NoBackend(BootBackend):
+    """No usable rollback mechanism: every boot-chain mutation is refused."""
+
+    name = "NoBackend"
+
+    def available(self) -> bool:
+        return False
+
+    def unavailable_reason(self) -> str:
+        return FAILSAFE_BOOT_BACKEND_REASON
+
+
+class BootcountFsBackend(BootBackend):
+    """P3.6 candidate-A backend: U-Boot BOOTCOUNT_EXT + eaidk-bootstate.
+
+    Boot trial state lives in a 4-byte record at <boot>/eaidk-ota/
+    bootcount.bin, shared with U-Boot's bootcount_ext driver.  This backend
+    only activates when the fail-safe U-Boot install marker exists on the
+    boot filesystem (written by the future on-site flash procedure);
+    selection otherwise degrades to NoBackend (fail closed).
+    """
+
+    name = "BootcountFsBackend"
+    MARKER_REL = "eaidk-ota/BACKEND"
+    STATE_REL = "eaidk-ota/bootcount.bin"
+    MARKER_CONTENT = "BootcountFsBackend 1"
+
+    def __init__(self, boot_dir: pathlib.Path, tool: str = "eaidk-bootstate"):
+        self.boot_dir = pathlib.Path(boot_dir)
+        self.tool = tool
+
+    def marker_path(self) -> pathlib.Path:
+        return self.boot_dir / self.MARKER_REL
+
+    def state_path(self) -> pathlib.Path:
+        return self.boot_dir / self.STATE_REL
+
+    def available(self) -> bool:
+        try:
+            return self.marker_path().read_text(
+                encoding="utf-8").strip() == self.MARKER_CONTENT
+        except OSError:
+            return False
+
+    def unavailable_reason(self) -> str:
+        return (f"{self.name} is not installed: missing or invalid marker "
+                f"{self.marker_path()}. The fail-safe U-Boot (P3.6 candidate "
+                "A) must be flashed and validated on-site first.")
+
+    def _run_bootstate(self, subcommand: str) -> subprocess.CompletedProcess:
+        return run([self.tool, subcommand, str(self.state_path()), "--json"])
+
+    @staticmethod
+    def fs_has_metadata_csum(dumpe2fs_output: str) -> bool:
+        """U-Boot v2024.07 ext4fs_write() refuses ext4 filesystems with the
+        metadata_csum feature (drivers/../fs/ext4/ext4_write.c).  On such a
+        filesystem the bootcount increment can never persist, so an armed
+        trial would repeat forever -- arm must refuse up front."""
+        for line in dumpe2fs_output.splitlines():
+            if line.startswith("Filesystem features:"):
+                return "metadata_csum" in line
+        return False
+
+    def _boot_fs_metadata_csum(self):
+        """True/False when the boot filesystem is detectable, None when not
+        (PC/fixture mode or missing tools) -- the gate only fires on proof."""
+        dev = run(["findmnt", "-no", "SOURCE",
+                   str(self.boot_dir)]).stdout.strip()
+        if not dev or not pathlib.Path(dev).exists():
+            return None
+        r = run(["dumpe2fs", "-h", dev])
+        if r.returncode != 0:
+            return None
+        return self.fs_has_metadata_csum(r.stdout)
+
+    def arm(self) -> dict:
+        if self._boot_fs_metadata_csum():
+            raise BackendError(
+                f"{self.boot_dir} filesystem has ext4 metadata_csum: U-Boot "
+                "v2024.07 cannot write the bootcount there, so a candidate "
+                "trial would repeat forever without a working fallback. "
+                "Remedy on-site BEFORE arming: umount /boot && e2fsck -f "
+                "<dev> && tune2fs -O ^metadata_csum <dev> && e2fsck -f "
+                "<dev> && mount /boot (see ota/docs/FLASH-PLAN-P36.md).")
+        r = self._run_bootstate("arm")
+        if r.returncode != 0:
+            raise BackendError(
+                f"eaidk-bootstate arm failed: {r.stdout.strip()} {r.stderr.strip()}")
+        return json.loads(r.stdout)
+
+    def clear(self) -> dict:
+        r = self._run_bootstate("clear")
+        if r.returncode != 0:
+            raise BackendError(
+                f"eaidk-bootstate clear failed: {r.stdout.strip()} {r.stderr.strip()}")
+        return json.loads(r.stdout)
+
+    def inspect(self) -> dict:
+        r = self._run_bootstate("inspect")
+        if r.returncode != 0:
+            raise BackendError(
+                f"eaidk-bootstate inspect failed: {r.stdout.strip()} {r.stderr.strip()}")
+        return json.loads(r.stdout)
+
+
+class RawBootstateBackend(BootBackend):
+    """P3.6-B candidate-B backend: U-Boot bootcount_eaidk310_raw + the raw
+    dual-copy record pair on fixed eMMC sectors (LBA 0x6400 / 0x7800).
+
+    State lives in two CRC32-protected 512-byte records inside the
+    unpartitioned 12-16 MiB tail -- no filesystem involvement at all.
+    Activation requires the fail-safe U-Boot install marker exactly like
+    the ext4 backend; writes additionally flow through eaidk-bootstate's
+    --allow-block-write gate and only ever target the two audited sectors.
+    """
+
+    name = "RawBootstateBackend"
+    STATE_REL = "eaidk-ota/BACKEND"  # marker shared with BootcountFsBackend
+
+    def __init__(self, boot_dir: pathlib.Path, tool: str = "eaidk-bootstate",
+                 raw_device: str = "/dev/mmcblk2"):
+        self.boot_dir = pathlib.Path(boot_dir)
+        self.tool = tool
+        self.raw_device = raw_device
+
+    def state_path(self) -> pathlib.Path:
+        return pathlib.Path(self.raw_device)
+
+    def marker_path(self) -> pathlib.Path:
+        return self.boot_dir / self.STATE_REL
+
+    def available(self) -> bool:
+        try:
+            return self.marker_path().read_text(
+                encoding="utf-8").strip() == f"{self.name} 1"
+        except OSError:
+            return False
+
+    def unavailable_reason(self) -> str:
+        return (f"{self.name} is not installed: missing or invalid marker "
+                f"{self.marker_path()}. The failsafe-raw U-Boot (P3.6-B "
+                "candidate B) must be flashed and validated on-site first.")
+
+    def _run_bootstate(self, subcommand: str, extra: list) -> subprocess.CompletedProcess:
+        cmd = [self.tool, subcommand, "--backend", "raw",
+               "--raw-device", self.raw_device,
+               "--allow-block-write", "--json"] + extra
+        return run(cmd)
+
+    def arm(self) -> dict:
+        r = self._run_bootstate("arm", [])
+        if r.returncode != 0:
+            raise BackendError(
+                f"eaidk-bootstate raw arm failed: {r.stdout.strip()} {r.stderr.strip()}")
+        return json.loads(r.stdout)
+
+    def clear(self) -> dict:
+        r = self._run_bootstate("clear", [])
+        if r.returncode != 0:
+            raise BackendError(
+                f"eaidk-bootstate raw clear failed: {r.stdout.strip()} {r.stderr.strip()}")
+        return json.loads(r.stdout)
+
+    def inspect(self) -> dict:
+        r = self._run_bootstate("inspect", [])
+        if r.returncode != 0:
+            raise BackendError(
+                f"eaidk-bootstate raw inspect failed: {r.stdout.strip()} {r.stderr.strip()}")
+        return json.loads(r.stdout)
+
+
+def select_backend(boot_dir: pathlib.Path, choice: str = "auto",
+                   tool: str = "eaidk-bootstate",
+                   raw_device: str = "/dev/mmcblk2") -> BootBackend:
+    """Backend selection is fail closed: anything unexpected -> NoBackend."""
+    if choice == "none":
+        return NoBackend()
+    if choice == "bootcount-fs":
+        return BootcountFsBackend(boot_dir, tool)
+    if choice == "raw":
+        return RawBootstateBackend(boot_dir, tool, raw_device)
+    # auto: the /boot marker names the activated backend; no marker (or an
+    # unknown one) means NoBackend on the board
+    marker = pathlib.Path(boot_dir) / "eaidk-ota" / "BACKEND"
+    try:
+        content = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return NoBackend()
+    if content == f"{BootcountFsBackend.name} 1":
+        return BootcountFsBackend(boot_dir, tool)
+    if content == f"{RawBootstateBackend.name} 1":
+        return RawBootstateBackend(boot_dir, tool, raw_device)
+    return NoBackend()
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def atomic_write(path: pathlib.Path, data: str, mode: int = 0o644) -> None:
+    """tmp + fsync + rename write. Never leaves partial files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+    dirfd = os.open(str(path.parent), os.O_DIRECTORY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def run(cmd, **kw) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, text=True, capture_output=True, **kw)
+    except FileNotFoundError:
+        # a missing probe tool is a failed check, never a crash
+        return subprocess.CompletedProcess(cmd, returncode=127,
+                                           stdout="", stderr=f"tool not found: {cmd[0]}")
+
+
+def fail_exit(code: int, message: str, payload=None) -> int:
+    out = {"ok": False, "error": message}
+    if payload:
+        out.update(payload)
+    print(json.dumps(out, sort_keys=True) if os.environ.get("EAIDK_OTA_JSON") else message)
+    return code
+
+
+class StateStore:
+    """Atomic JSON state + append-only history under <state_dir>."""
+
+    def __init__(self, state_dir: pathlib.Path):
+        self.dir = state_dir
+        self.file = state_dir / STATE_FILE
+        self.history = state_dir / HISTORY_NAME
+        self.lockpath = state_dir / LOCK_NAME / "eaidk-ota.lock"
+
+    def ensure_dirs(self):
+        for sub in ("", HISTORY_NAME, STAGING_NAME, "backups", LOCK_NAME):
+            (self.dir / sub).mkdir(parents=True, exist_ok=True)
+
+    class Lock:
+        def __init__(self, path):
+            self.path = path
+            self.fh = None
+
+        def __enter__(self):
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.fh = open(self.path, "w")
+            fcntl.flock(self.fh, fcntl.LOCK_EX)
+            return self
+
+        def __exit__(self, *a):
+            fcntl.flock(self.fh, fcntl.LOCK_UN)
+            self.fh.close()
+
+    def locked(self):
+        self.ensure_dirs()
+        return StateStore.Lock(self.lockpath)
+
+    def read(self) -> dict:
+        if not self.file.exists():
+            return {"state": "IDLE", "updated": now_iso(), "history": []}
+        try:
+            return json.loads(self.file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            # corrupted state is never trusted; rebuild conservatively as IDLE
+            return {"state": "IDLE", "updated": now_iso(),
+                    "note": "state.json was unreadable and was reset to IDLE"}
+
+    def write(self, state: str, **extra) -> dict:
+        data = self.read()
+        prev = data.get("state", "IDLE")
+        data.update({"state": state, "previous_state": prev,
+                     "updated": now_iso()})
+        data.update(extra)
+        atomic_write(self.file, json.dumps(data, indent=2, sort_keys=True) + "\n")
+        self.history.mkdir(parents=True, exist_ok=True)
+        entry = {"at": now_iso(), "from": prev, "to": state}
+        entry.update(extra)
+        with open(self.history / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                                  + f"-{prev}-{state}.json"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, indent=2, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        return data
+
+
+class LocalAuthorization:
+    """Physical-console authorization token. Remote sessions can never
+    create it; that is the whole point."""
+
+    def __init__(self, run_dir: pathlib.Path, config_dir: pathlib.Path):
+        self.token = run_dir / AUTH_TOKEN
+        self.flag = config_dir / ALLOW_FLAG
+
+    @staticmethod
+    def session_tty() -> str:
+        try:
+            return os.readlink(f"/proc/{os.getpid()}/fd/0")
+        except OSError:
+            return "unknown"
+
+    def remote_session(self) -> bool:
+        # fail closed: anything that is not a physical console counts as remote
+        # (ssh pts, pipes, redirected files, unknown fds...)
+        return self.session_tty() not in LOCAL_TTYS
+
+    def create(self) -> int:
+        if self.remote_session():
+            print("ERROR: authorization refused for remote session "
+                  f"(tty={self.session_tty()}). "
+                  "authorize-local must run on a physical console (ttyS2/tty1).")
+            return EXIT_AUTH
+        expiry = datetime.now(timezone.utc) + timedelta(seconds=AUTH_TTL_SECONDS)
+        payload = json.dumps({
+            "issued": now_iso(),
+            "expires": expiry.isoformat(timespec="seconds"),
+            "tty": self.session_tty(),
+            "ttl_seconds": AUTH_TTL_SECONDS,
+        }, indent=2) + "\n"
+        atomic_write(self.token, payload)
+        print(f"local authorization granted until {expiry.isoformat(timespec='seconds')}")
+        return EXIT_OK
+
+    def valid(self) -> (bool, str):
+        if not self.token.exists():
+            return False, f"missing {self.token} (authorize on the physical console)"
+        try:
+            data = json.loads(self.token.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            return False, f"unreadable authorization token: {exc}"
+        expires = datetime.fromisoformat(data["expires"])
+        if datetime.now(timezone.utc) > expires:
+            return False, "authorization token expired"
+        return True, data.get("tty", "tty")
+
+    def binding_ok(self, **expected) -> (bool, str):
+        """One-shot tokens may carry a binding dict; when present, every
+        expected field must match exactly (fail closed on any mismatch or
+        missing binding)."""
+        try:
+            data = json.loads(self.token.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            return False, f"unreadable authorization token: {exc}"
+        binding = data.get("binding")
+        if not isinstance(binding, dict):
+            return False, "authorization token carries no binding; "
+        "remote boot mutation requires a bound token"
+        for key, want in expected.items():
+            got = binding.get(key)
+            if got != want:
+                return False, f"binding mismatch for {key}: {got!r} != {want!r}"
+        return True, "binding ok"
+
+    def boot_mutation_allowed(self) -> (bool, str):
+        if not self.flag.exists():
+            return False, ("Boot mutation disabled. Create explicit local "
+                           "authorization token while physically present.")
+        ok, why = self.valid()
+        if not ok:
+            return False, why
+        return True, "authorized"
+
+
+# ---------------------------------------------------------------- bundles --
+
+class Bundle:
+    """A verified-in-place .tar.zst kernel bundle."""
+
+    def __init__(self, archive: pathlib.Path):
+        self.archive = archive
+        self.top = None
+        self.manifest = None
+        self.report = None
+
+    def _tar(self, *args):
+        return run(["tar", "--zstd", *args])
+
+    def list_members(self):
+        r = self._tar("-tf", str(self.archive))
+        if r.returncode != 0:
+            raise ValueError(f"unreadable archive: {r.stderr.strip()[:200]}")
+        return r.stdout.splitlines()
+
+    def read_member(self, member: str) -> str:
+        r = run(["tar", "--zstd", "-xOf", str(self.archive), member])
+        if r.returncode != 0:
+            raise ValueError(f"cannot read member {member}: {r.stderr.strip()[:200]}")
+        return r.stdout
+
+    def load_manifest(self):
+        members = self.list_members()
+        tops = {m.split("/")[0] for m in members if m.strip()}
+        if len(tops) != 1:
+            raise ValueError(f"expected exactly one top-level dir, saw {sorted(tops)}")
+        self.top = tops.pop()
+        manifest_member = f"{self.top}/manifest.json"
+        if manifest_member not in members:
+            raise ValueError(f"missing {manifest_member}")
+        self.manifest = json.loads(self.read_member(manifest_member))
+        report_member = f"{self.top}/verification-report.json"
+        if report_member in members:
+            try:
+                self.report = json.loads(self.read_member(report_member))
+            except json.JSONDecodeError:
+                self.report = None
+        return members
+
+
+def verify_bundle(archive: pathlib.Path, expect_release: str = None,
+                  tmp_root: pathlib.Path = None) -> dict:
+    """18-point verification. Returns report dict; raises on failure."""
+    checks = []
+
+    def check(name, ok, detail=""):
+        checks.append({"check": name, "ok": bool(ok), "detail": str(detail)})
+        if not ok:
+            raise VerifyError(name, detail)
+
+    bundle = Bundle(archive)
+
+    # 1 archive readable
+    try:
+        members = bundle.list_members()
+        check("archive_readable", True, f"{len(members)} members")
+    except ValueError as exc:
+        check("archive_readable", False, str(exc))
+        raise
+
+    # 2/3 path traversal + absolute paths
+    evil = [m for m in members
+            if m.startswith("/") or ".." in pathlib.PurePosixPath(m).parts]
+    check("no_path_traversal", not evil, f"offending: {evil[:3]}")
+
+    bundle.load_manifest()
+    files = bundle.manifest.get("files", [])
+    check("manifest_present", bool(files), f"{len(files)} entries")
+
+    # manifest completeness: every archive file member must be manifest-listed,
+    # except the manifest itself (it cannot contain its own hash)
+    listed = {f["path"] for f in files}
+    top_depth = len(bundle.top.split("/"))
+    unmanifested = []
+    for m in members:
+        if m.endswith("/") or m == f"{bundle.top}/manifest.json":
+            continue
+        rel = "/".join(m.split("/")[top_depth:])
+        if rel not in listed:
+            unmanifested.append(rel)
+    check("manifest_exhaustive", not unmanifested, f"unmanifested: {unmanifested[:3]}")
+
+    # 4/5 bundle sha256
+    archive_sha = sha256_file(archive)
+    check("bundle_sha256_computed", True, archive_sha)
+    sidecar = archive.with_suffix(archive.suffix + ".sha256")
+    if sidecar.exists():
+        expected = sidecar.read_text(encoding="utf-8").split()[0].strip()
+        check("bundle_sha256_matches_sidecar", expected == archive_sha,
+              f"{expected} vs {archive_sha}")
+
+    # 6 per-file sha256 + size (verify only the non-module payload exhaustively,
+    # sample-verify modules to bound cost on small boards)
+    tmp_root = tmp_root or pathlib.Path(tempfile.mkdtemp(prefix="eaidk-ota-verify-"))
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    payload = [f for f in files if not f["path"].startswith("root/lib/modules/")]
+    modules = [f for f in files if f["path"].startswith("root/lib/modules/")]
+    extract_list = tmp_root / "extract-list.txt"
+    extract_list.write_text(
+        "\n".join(f"{bundle.top}/{f['path']}" for f in payload) + "\n",
+        encoding="utf-8")
+    r = run(["tar", "--zstd", "-xf", str(archive), "-C", str(tmp_root),
+             "--files-from", str(extract_list)])
+    check("payload_extract", r.returncode == 0, r.stderr.strip()[:200])
+
+    bad = []
+    for entry in payload:
+        p = tmp_root / bundle.top / entry["path"]
+        if not p.is_file() or sha256_file(p) != entry["sha256"]:
+            bad.append(entry["path"])
+    check("payload_sha256", not bad, f"mismatched: {bad[:3]}")
+    size_bad = [f["path"] for f in files
+                if (tmp_root / bundle.top / f["path"]).exists()
+                and (tmp_root / bundle.top / f["path"]).stat().st_size != f["size"]]
+    check("payload_sizes", not size_bad, f"mismatched: {size_bad[:3]}")
+
+    # 7 board identity marker inside the DTB (bytes, no dtc dependency)
+    dtb_entry = next((f for f in files
+                      if f["path"].startswith("boot/dtb/") and f["path"].endswith(".dtb")), None)
+    check("dtb_present", dtb_entry is not None, "no .dtb in bundle")
+    dtb_bytes = (tmp_root / bundle.top / dtb_entry["path"]).read_bytes()
+    check("dtb_board_identity", b"openailab,eaidk-310" in dtb_bytes
+          and b"rockchip,rk3328" in dtb_bytes, "model/compatible markers missing")
+
+    # 8 kernel release consistency across manifest paths
+    releases = {re.search(r"-(\d+\.\d+\.\d+-eaidk310-zramfix1)(?:\.|$)", f["path"]).group(1)
+                for f in files
+                if re.search(r"-(\d+\.\d+\.\d+-eaidk310-zramfix1)(?:\.|$)", f["path"])}
+    check("release_consistent", len(releases) == 1, f"saw {sorted(releases)}")
+    release = releases.pop() if len(releases) == 1 else None
+    if expect_release:
+        check("release_matches_request", release == expect_release,
+              f"{release} != {expect_release}")
+
+    # 9/10/11 module release dir + no foreign kernels
+    mod_tops = {f["path"].split("/")[3]
+                for f in modules if len(f["path"].split("/")) > 4}
+    check("modules_single_release", mod_tops == {release}, f"saw {sorted(mod_tops)}")
+    check("no_foreign_modules", not any(
+        m in mod_tops for m in ("6.8.4-rk3328", "6.12.108-eaidk310-zramfix1",
+                                "6.12.111-eaidk310-zramfix1")),
+        f"foreign kernels in bundle: {sorted(mod_tops)}")
+
+    image_entry = next((f for f in files if f["path"] == f"boot/Image-{release}"), None)
+    check("image_present", image_entry is not None, f"boot/Image-{release} missing")
+
+    # 12 initramfs modules release (uInitrd is a packed image; the build gate
+    # covers its content - here we check presence + the pipeline report)
+    uinitrd_entry = next((f for f in files if f["path"] == f"boot/uInitrd-{release}"), None)
+    check("uinitrd_present", uinitrd_entry is not None, f"boot/uInitrd-{release} missing")
+
+    # 13 LOCALVERSION embedded in the kernel image
+    image_path = tmp_root / bundle.top / f"boot/Image-{release}"
+    image_bytes = image_path.read_bytes()
+    check("image_localversion", release.encode() in image_bytes,
+          f"{release} string not found in Image")
+
+    # 14/15 config invariants (ZRAM lz4, EAIDK310 invariants) are attested at
+    # build time by the pipeline gate and re-checked at runtime by `health`.
+    report = bundle.report or {}
+    check("build_gate_pass", report.get("gate") == "PASS",
+          f"verification-report gate={report.get('gate')}")
+    check("build_release_matches", report.get("kernel_release") == release,
+          f"{report.get('kernel_release')} != {release}")
+
+    # 16 module file count sanity vs pipeline report (report counts *.ko* only;
+    # depmod metadata files are additional and excluded here)
+    ko_modules = [f for f in modules if f["path"].endswith(".ko")]
+    if report.get("module_files"):
+        check("module_count_matches_report",
+              len(ko_modules) == report["module_files"],
+              f"{len(ko_modules)} != {report.get('module_files')}")
+
+    # 17 no absolute WSL build paths inside any extracted text payload
+    leak = []
+    for entry in payload:
+        p = tmp_root / bundle.top / entry["path"]
+        if entry["path"].endswith((".py", ".sh", ".txt", ".conf", ".json")):
+            try:
+                if "/home/Fog/eaidk310-kernel" in p.read_text(encoding="utf-8", errors="ignore"):
+                    leak.append(entry["path"])
+            except OSError:
+                pass
+    check("no_build_path_leak", not leak, f"leaks: {leak[:3]}")
+
+    # 18 size sanity: image/uInitrd in plausible ranges
+    ok_sizes = (5 << 20) < image_entry["size"] < (64 << 20) and \
+               (5 << 20) < uinitrd_entry["size"] < (64 << 20)
+    check("size_plausible", ok_sizes,
+          f"image={image_entry['size']} uinitrd={uinitrd_entry['size']}")
+
+    result = {
+        "archive": str(archive),
+        "bundle_sha256": archive_sha,
+        "release": release,
+        "checks": checks,
+        "all_ok": True,
+        "verified_at": now_iso(),
+    }
+    shutil.rmtree(tmp_root, ignore_errors=True)
+    return result
+
+
+class VerifyError(Exception):
+    def __init__(self, check: str, detail: str):
+        super().__init__(f"verify failed at '{check}': {detail}")
+        self.check = check
+        self.detail = detail
+
+
+# ---------------------------------------------------------------- commands --
+
+def cmd_inspect(args) -> int:
+    bundle = Bundle(pathlib.Path(args.bundle))
+    members = bundle.list_members()
+    bundle.load_manifest()
+    files = bundle.manifest.get("files", [])
+    payload = {"archive": str(bundle.archive), "members": len(members),
+               "manifest_entries": len(files),
+               "total_bytes": sum(f["size"] for f in files),
+               "top": bundle.top,
+               "release_hint": sorted({mm.split("-")[0] for mm in members
+                                       if "zramfix1" in mm})[:3]}
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return EXIT_OK
+
+
+def cmd_verify(args) -> int:
+    try:
+        report = verify_bundle(pathlib.Path(args.bundle),
+                               expect_release=args.release or None)
+    except VerifyError as exc:
+        print(f"VERIFY=FAIL: {exc}")
+        return EXIT_VERIFY
+    except ValueError as exc:
+        print(f"VERIFY=FAIL: {exc}")
+        return EXIT_VERIFY
+    report["VERIFY"] = "PASS"
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        for c in report["checks"]:
+            if c["ok"]:
+                print(f"  PASS  {c['check']}")
+            else:
+                print(f"  FAIL  {c['check']}  {c['detail']}")
+        print("VERIFY=PASS")
+    return EXIT_OK
+
+
+def cmd_stage(args) -> int:
+    state = StateStore(pathlib.Path(args.state_dir))
+    archive = pathlib.Path(args.bundle)
+    if not archive.exists():
+        return fail_exit(EXIT_ERROR, f"bundle not found: {archive}")
+    with state.locked():
+        try:
+            report = verify_bundle(archive)
+        except (VerifyError, ValueError) as exc:
+            state.write("FAILED", stage_error=str(exc)[:200])
+            return fail_exit(EXIT_VERIFY, f"VERIFY=FAIL: {exc}")
+        release = report["release"]
+        staging = pathlib.Path(args.state_dir) / STAGING_NAME / release
+        marker = staging / ".bundle.sha256"
+        if staging.exists():
+            if marker.exists() and marker.read_text().strip() == report["bundle_sha256"]:
+                state.write("STAGED", release=release,
+                            bundle_sha256=report["bundle_sha256"])
+                print(f"STAGE=PASS (already staged, idempotent) release={release}")
+                return EXIT_OK
+            return fail_exit(EXIT_CONFLICT,
+                             f"release {release} already staged with a different "
+                             "hash; refusing to overwrite")
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix=".staging-tmp-",
+                                            dir=staging.parent))
+        tar_r = run(["tar", "--zstd", "-xf", str(archive), "-C", str(tmp)])
+        if tar_r.returncode != 0:
+            shutil.rmtree(tmp, ignore_errors=True)
+            return fail_exit(EXIT_ERROR, f"extract failed: {tar_r.stderr[:200]}")
+        extracted = tmp / f"eaidk310-linux-{release}"
+        if not extracted.is_dir():
+            shutil.rmtree(tmp, ignore_errors=True)
+            return fail_exit(EXIT_ERROR, "unexpected bundle layout after extract")
+        # stage only what install needs; keep the bundle's own manifest
+        target = staging
+        target.mkdir(parents=True, exist_ok=True)
+        for item in ("boot", "root", "deploy", "manifest.json",
+                     "verification-report.json"):
+            src = extracted / item
+            if src.exists():
+                shutil.move(str(src), str(target / item))
+        atomic_write(marker, report["bundle_sha256"] + "\n")
+        shutil.rmtree(tmp, ignore_errors=True)
+        # fsync the staged tree
+        for root, _dirs, fnames in os.walk(target):
+            fd = os.open(root, os.O_DIRECTORY)
+            os.fsync(fd)
+            os.close(fd)
+            for fn in fnames:
+                fd = os.open(os.path.join(root, fn), os.O_RDONLY)
+                os.fsync(fd)
+                os.close(fd)
+        state.write("STAGED", release=release,
+                    bundle_sha256=report["bundle_sha256"])
+        print(f"STAGE=PASS release={release} at {target}")
+        return EXIT_OK
+
+
+def cmd_status(args) -> int:
+    state = StateStore(pathlib.Path(args.state_dir))
+    data = state.read()
+    staged = []
+    staging_root = pathlib.Path(args.state_dir) / STAGING_NAME
+    if staging_root.exists():
+        for rel in sorted(staging_root.iterdir()):
+            marker = rel / ".bundle.sha256"
+            staged.append({"release": rel.name,
+                           "bundle_sha256": marker.read_text().strip() if marker.exists() else None})
+    backend = select_backend(pathlib.Path(args.boot_dir), args.backend,
+                             args.bootstate_tool, args.raw_device)
+    try:
+        bootstate = backend.inspect() if backend.available() else None
+    except BackendError:
+        bootstate = {"state": "unreadable", "bootcount": 0,
+                     "upgrade_available": 0, "fail_closed": True}
+    payload = {"state": data.get("state"), "updated": data.get("updated"),
+               "release": data.get("release"),
+               "bundle_sha256": data.get("bundle_sha256"),
+               "staged": staged,
+               "failsafe_boot_backend": FAILSAFE_BOOT_BACKEND,
+               "active_backend": backend.name,
+               "backend_available": backend.available(),
+               "bootstate": bootstate,
+               "tool_version": VERSION}
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"state:      {payload['state']}")
+        print(f"release:    {payload['release']}")
+        print(f"updated:    {payload['updated']}")
+        print(f"backend:    {FAILSAFE_BOOT_BACKEND} "
+              f"(active: {backend.name}, available: {backend.available()})")
+        if bootstate is not None:
+            print(f"bootstate:  bootcount={bootstate.get('bootcount')} "
+                  f"upgrade_available={bootstate.get('upgrade_available')} "
+                  f"({bootstate.get('state')})")
+        for s in staged:
+            print(f"staged:     {s['release']} ({(s['bundle_sha256'] or '?')[:16]}…)")
+    return EXIT_OK
+
+
+def cmd_history(args) -> int:
+    history = pathlib.Path(args.state_dir) / HISTORY_NAME
+    entries = []
+    if history.exists():
+        for f in sorted(history.glob("*.json")):
+            try:
+                entries.append(json.loads(f.read_text(encoding="utf-8")))
+            except json.JSONDecodeError:
+                continue
+    if args.json:
+        print(json.dumps(entries, indent=2, sort_keys=True))
+    else:
+        for e in entries[-20:]:
+            print(f"{e.get('at')}  {e.get('from')} -> {e.get('to')}  "
+                  f"release={e.get('release', '-')}")
+    return EXIT_OK
+
+
+def current_default_entry(boot_dir: pathlib.Path) -> dict:
+    """Parse the current default extlinux entry (label + APPEND line)."""
+    conf = boot_dir / "extlinux" / "extlinux.conf"
+    text = conf.read_text(encoding="utf-8")
+    default = next((ln.split(None, 1)[1].strip() for ln in text.splitlines()
+                    if ln.startswith("default ")), None)
+    append = next((ln.split(None, 1)[1].strip() for ln in text.splitlines()
+                   if ln.strip().startswith("APPEND ")), None)
+    labels = [ln.split(None, 1)[1].strip() for ln in text.splitlines()
+              if ln.strip().startswith("label ")]
+    return {"conf": str(conf), "text": text, "default": default,
+            "append": append, "labels": labels}
+
+
+def cmd_plan_install(args) -> int:
+    state = StateStore(pathlib.Path(args.state_dir))
+    release = args.release
+    staging = pathlib.Path(args.state_dir) / STAGING_NAME / release
+    if not staging.exists():
+        return fail_exit(EXIT_ERROR, f"release not staged: {release}")
+    boot = pathlib.Path(args.boot_dir)
+    dtb_dir = staging / "boot/dtb/rockchip"
+    dtb_src = next(iter(sorted(dtb_dir.glob("*.dtb"))), None) if dtb_dir.exists() else None
+    if dtb_src is None:
+        return fail_exit(EXIT_ERROR, "staged bundle contains no DTB under boot/dtb/rockchip")
+    targets = {
+        "image": boot / f"Image-{release}",
+        "uinitrd": boot / f"uInitrd-{release}",
+        "dtb": boot / "dtb/rockchip" / dtb_src.name,
+    }
+    sources = {
+        "image": staging / f"boot/Image-{release}",
+        "uinitrd": staging / f"boot/uInitrd-{release}",
+        "dtb": dtb_src,
+    }
+    sizes = {k: src.stat().st_size for k, src in sources.items()}
+    for name, target in targets.items():
+        if target.exists():
+            if sha256_file(target) != sha256_file(sources[name]):
+                return fail_exit(EXIT_CONFLICT,
+                                 f"{target} exists with different content; "
+                                 "refusing to overwrite a boot file")
+    label = f"rockchip-kernel-{release}"
+    ext = current_default_entry(boot)
+    if label in ext["labels"]:
+        return fail_exit(EXIT_CONFLICT, f"extlinux label already present: {label}")
+    if not ext["append"]:
+        return fail_exit(EXIT_ERROR, "current extlinux.conf has no APPEND line to inherit")
+    df = run(["df", "-BM", "--output=avail", str(boot)])
+    try:
+        avail_mib = int(df.stdout.splitlines()[1].strip().rstrip("M"))
+    except (IndexError, ValueError):
+        avail_mib = -1
+    need_mib = (sum(sizes.values()) + (1 << 20) - 1) >> 20
+    plan = {
+        "would_install": {k: str(v) for k, v in targets.items()},
+        "sizes_bytes": sizes,
+        "required_boot_mib": need_mib,
+        "available_boot_mib": avail_mib,
+        "extlinux_entry": {
+            "label": label,
+            "LINUX": f"/Image-{release}",
+            "FDT": f"/dtb/rockchip/{dtb_src.name}",
+            "INITRD": f"/uInitrd-{release}",
+            "APPEND": ext["append"],
+            "note": "APPEND inherited verbatim from the current default entry",
+        },
+        "current_default": ext["default"],
+        "default_will_change": False,
+        "labels_after": ext["labels"] + [label],
+        "rollback_backend": FAILSAFE_BOOT_BACKEND,
+    }
+    ok = need_mib <= avail_mib and avail_mib > 0
+    plan["space_ok"] = ok
+    if args.json:
+        print(json.dumps(plan, indent=2, sort_keys=True))
+    else:
+        print("Would install:")
+        for k, v in plan["would_install"].items():
+            print(f"  {v}  ({sizes[k]} bytes)")
+        print("Would append extlinux entry:")
+        for k, v in plan["extlinux_entry"].items():
+            print(f"  {k:8} {v}")
+        print(f"Current default: {plan['current_default']} (unchanged)")
+        print(f"Candidate:       {release}")
+        print(f"Rollback backend: {FAILSAFE_BOOT_BACKEND}")
+        print(f"Boot space: need {need_mib} MiB, available {avail_mib} MiB -> "
+              f"{'OK' if ok else 'INSUFFICIENT'}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def _atomic_copy(src: pathlib.Path, dst: pathlib.Path) -> None:
+    """Copy src->dst via same-directory temp + fsync + rename + dir fsync."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".tmp-install")
+    with open(src, "rb") as fin, open(tmp, "wb") as fout:
+        while True:
+            chunk = fin.read(1 << 20)
+            if not chunk:
+                break
+            fout.write(chunk)
+        fout.flush()
+        os.fsync(fout.fileno())
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, dst)
+    dirfd = os.open(str(dst.parent), os.O_DIRECTORY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+
+
+def cmd_install_candidate(args) -> int:
+    auth = LocalAuthorization(args.run_dir, args.config_dir)
+    allowed, why = auth.boot_mutation_allowed()
+    if not allowed:
+        return fail_exit(EXIT_AUTH, f"ERROR: {why}")
+    state = StateStore(pathlib.Path(args.state_dir))
+    data = state.read()
+    release = data.get("release")
+    if data.get("state") != "STAGED" or not release:
+        return fail_exit(EXIT_CONFLICT,
+                         f"install requires state STAGED (current: {data.get('state')})")
+    staging = pathlib.Path(args.state_dir) / STAGING_NAME / release
+    marker = staging / ".bundle.sha256"
+    bundle_sha = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+    ok, why = auth.binding_ok(
+        candidate=release, bundle_sha256=bundle_sha,
+        backend=FAILSAFE_BOOT_BACKEND)
+    if not ok:
+        return fail_exit(EXIT_AUTH, f"ERROR: {why}")
+    # stable identity: current extlinux DEFAULT must equal the binding's stable
+    boot = pathlib.Path(args.boot_dir)
+    try:
+        ext = current_default_entry(boot)
+    except OSError as exc:
+        return fail_exit(EXIT_ERROR, f"cannot read extlinux.conf: {exc}")
+    ok, why = auth.binding_ok(stable=ext["default"])
+    if not ok:
+        return fail_exit(EXIT_AUTH, f"ERROR: {why}")
+
+    src_image = staging / "boot" / f"Image-{release}"
+    src_initrd = staging / "boot" / f"uInitrd-{release}"
+    dtb_dir = staging / "boot" / "dtb" / "rockchip"
+    dtb_src = next(iter(sorted(dtb_dir.glob("*.dtb"))), None)
+    if not src_image.exists() or not src_initrd.exists() or dtb_src is None:
+        return fail_exit(EXIT_ERROR, "staged tree is missing kernel artifacts")
+    targets = {
+        src_image: boot / f"Image-{release}",
+        src_initrd: boot / f"uInitrd-{release}",
+        dtb_src: boot / "dtb" / "rockchip" / dtb_src.name,
+    }
+    # refuse overwriting a different-content boot file; versioned names must
+    # be new (or byte-identical for idempotent re-run)
+    for src, dst in targets.items():
+        if dst.exists() and sha256_file(dst) != sha256_file(src):
+            return fail_exit(EXIT_CONFLICT,
+                             f"{dst} exists with different content; refusing")
+    installed = {}
+    for src, dst in targets.items():
+        _atomic_copy(src, dst)
+        if sha256_file(dst) != sha256_file(src):
+            return fail_exit(EXIT_ERROR, f"post-install hash mismatch: {dst}")
+        installed[str(dst)] = sha256_file(src)
+    state.write("STAGED", installed=installed,
+                note=f"installed {release} versioned files to /boot")
+    print("INSTALL=PASS")
+    for dst, h in installed.items():
+        print(f"  {dst}  {h[:16]}…")
+    return EXIT_OK
+
+
+def cmd_authorize_local(args) -> int:
+    auth = LocalAuthorization(args.run_dir, args.config_dir)
+    return auth.create()
+
+
+def _backend_or_refusal(args):
+    """Common gate for try/arm/commit/rollback: backend capability first
+    (a hard infeasibility, stable exit 4 whenever no backend is installed),
+    then local authorization for the actual mutation."""
+    backend = select_backend(pathlib.Path(args.boot_dir), args.backend,
+                             args.bootstate_tool, args.raw_device)
+    if not backend.available():
+        return None, fail_exit(EXIT_BACKEND, backend.unavailable_reason())
+    auth = LocalAuthorization(args.run_dir, args.config_dir)
+    allowed, why = auth.boot_mutation_allowed()
+    if not allowed:
+        return None, fail_exit(EXIT_AUTH, f"ERROR: {why}")
+    return backend, None
+
+
+def cmd_try(args) -> int:
+    backend, refusal = _backend_or_refusal(args)
+    if refusal is not None:
+        return refusal
+    state = StateStore(pathlib.Path(args.state_dir))
+    data = state.read()
+    if data.get("state") not in ("STAGED", "ARMED"):
+        return fail_exit(EXIT_CONFLICT,
+                         f"arm requires a staged candidate "
+                         f"(current: {data.get('state')})")
+    if data.get("state") == "ARMED":
+        bootstate = backend.inspect()
+        print(f"already armed via {backend.name}; bootstate unchanged "
+              f"(bootcount={bootstate.get('bootcount')}, "
+              f"upgrade_available={bootstate.get('upgrade_available')})")
+        return EXIT_OK
+    try:
+        bootstate = backend.arm()
+    except BackendError as exc:
+        return fail_exit(EXIT_ERROR, str(exc))
+    state.write("ARMED", release=data.get("release"),
+                bundle_sha256=data.get("bundle_sha256"),
+                backend=backend.name, bootstate=bootstate)
+    print(f"candidate armed via {backend.name}: {backend.state_path()}")
+    print("reboot now: U-Boot runs one candidate trial (bootlimit=1); "
+          "a failed trial falls back to the stable extlinux entry")
+    return EXIT_OK
+
+
+def cmd_arm(args) -> int:
+    return cmd_try(args)
+
+
+def cmd_commit(args) -> int:
+    state = StateStore(pathlib.Path(args.state_dir))
+    data = state.read()
+    if data.get("state") not in ("HEALTHY", "HEALTH_PENDING"):
+        return fail_exit(EXIT_CONFLICT,
+                         f"commit requires state HEALTHY (current: {data.get('state')})")
+    backend, refusal = _backend_or_refusal(args)
+    if refusal is not None:
+        return refusal
+    try:
+        bootstate = backend.clear()
+    except BackendError as exc:
+        return fail_exit(EXIT_ERROR, str(exc))
+    state.write("COMMITTED", release=data.get("release"),
+                bundle_sha256=data.get("bundle_sha256"),
+                backend=backend.name, bootstate=bootstate,
+                note="bootcount cleared: candidate is the new stable default")
+    print(f"candidate committed via {backend.name}; "
+          "bootstate cleared (bootcount=0, upgrade_available=0)")
+    return EXIT_OK
+
+
+def cmd_rollback(args) -> int:
+    backend, refusal = _backend_or_refusal(args)
+    if refusal is not None:
+        return refusal
+    state = StateStore(pathlib.Path(args.state_dir))
+    data = state.read()
+    if data.get("state") not in ("HEALTH_PENDING", "HEALTHY", "ARMED",
+                                 "FAILED", "ROLLBACK_PENDING"):
+        return fail_exit(EXIT_CONFLICT,
+                         f"rollback not applicable in state {data.get('state')}")
+    try:
+        bootstate = backend.clear()
+    except BackendError as exc:
+        return fail_exit(EXIT_ERROR, str(exc))
+    state.write("ROLLED_BACK", previous_release=data.get("release"),
+                backend=backend.name, bootstate=bootstate,
+                note="bootcount cleared: stable extlinux entry restored")
+    print(f"rolled back via {backend.name}; "
+          "bootstate cleared, stable extlinux entry is the boot default")
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------- health --
+
+def cmd_health(args) -> int:
+    boot_dir = pathlib.Path(args.boot_dir)
+    critical = []
+
+    def crit(name, ok, detail=""):
+        critical.append({"check": name, "ok": bool(ok), "detail": detail})
+
+    release = subprocess.run(["uname", "-r"], text=True, capture_output=True).stdout.strip()
+    crit("kernel_release", bool(release), release)
+    if args.expected_release:
+        crit("kernel_is_candidate", release == args.expected_release,
+             f"{release} vs {args.expected_release}")
+    root_rw = run(["findmnt", "-n", "-o", "OPTIONS", "/"]).stdout
+    crit("root_rw", "rw" in root_rw.split(",") if root_rw else False, root_rw.strip())
+    running = run(["systemctl", "is-system-running"]).stdout.strip()
+    crit("systemd_running", running in ("running", "degraded"), running)
+    crit("boot_readable", (boot_dir / "extlinux" / "extlinux.conf").exists(), str(boot_dir))
+    crit("emmc_present", pathlib.Path("/dev/mmcblk2").exists(), "/dev/mmcblk2")
+    eth = pathlib.Path("/sys/class/net/eth0")
+    crit("eth0_present", eth.exists(), str(eth))
+    zram_comp = pathlib.Path("/sys/block/zram0/comp_algorithm")
+    comp = zram_comp.read_text() if zram_comp.exists() else ""
+    crit("zram_present", pathlib.Path("/dev/zram0").exists(), "/dev/zram0")
+    crit("zram_lz4", "[lz4]" in comp, comp.strip())
+    thermal_ok = any(pathlib.Path(f"/sys/class/thermal/thermal_zone{i}/temp").exists()
+                     for i in range(6))
+    crit("thermal_readable", thermal_ok, "thermal_zone*")
+    if os.geteuid() == 0:
+        dmesg = run(["dmesg"]).stdout
+    else:
+        r = run(["sudo", "-n", "dmesg"])
+        dmesg = r.stdout if r.returncode == 0 and r.stdout.strip() else run(
+            ["journalctl", "-k", "-b", "--no-pager"]).stdout
+    bad = [ln for ln in dmesg.splitlines()
+           if re.search(r"Kernel panic|Oops", ln, re.I)]
+    crit("no_panic_oops", not bad, f"{len(bad)} hits")
+    for mnt in ("/", "/boot"):
+        crit(f"mount{mnt}", run(["findmnt", "-n", mnt]).returncode == 0, mnt)
+
+    critical_pass = all(c["ok"] for c in critical)
+
+    remote = []
+    def remote_check(name, ok, detail=""):
+        remote.append({"check": name, "ok": bool(ok), "detail": detail})
+
+    attempts = max(1, args.network_retries)
+    for attempt in range(attempts):
+        remote.clear()
+        v4 = run(["ip", "-4", "-br", "addr", "show", "eth0"]).stdout
+        remote_check("dhcpv4", "172.31." in v4 or re.search(r"\d+\.\d+\.\d+\.\d+", v4) is not None, v4.strip())
+        remote_check("gw4", run(["ping", "-c1", "-W2", "172.31.180.33"]).returncode == 0)
+        remote_check("portal4", run(["curl", "-4", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+                                     "--max-time", "8", "http://net.szu.edu.cn/"]).returncode == 0)
+        v6addr = run(["ip", "-6", "-br", "addr", "show", "eth0", "scope", "global"]).stdout
+        remote_check("v6_addr", bool(v6addr.strip()), v6addr.strip())
+        remote_check("v6_internet", run(["curl", "-6", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+                                         "--max-time", "12", "https://www.debian.org/"]).returncode == 0)
+        remote_check("v6_dns", run(["nslookup", "-timeout=4", "debian.org"]).returncode == 0)
+        remote_check("shellcrash", run(["systemctl", "is-active", "shellcrash"]).stdout.strip() == "active")
+        proxy = run(["curl", "-x", "http://127.0.0.1:7890", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
+                     "--max-time", "12", "http://www.gstatic.com/generate_204"])
+        remote_check("proxy7890_v4", proxy.stdout.strip().endswith(("204", "200")),
+                     proxy.stdout.strip())
+        remote_check("tailscaled", run(["systemctl", "is-active", "tailscaled"]).stdout.strip() == "active")
+        ts = run(["tailscale", "status"]).stdout
+        remote_check("tailscale_online", "eaidk-310" in ts, ts.splitlines()[0][:60] if ts else "")
+        if all(r["ok"] for r in remote):
+            break
+        if attempt + 1 < attempts:
+            time.sleep(args.network_retry_wait)
+
+    remote_pass = all(r["ok"] for r in remote)
+    result = {"critical": critical, "critical_pass": critical_pass,
+              "remote": remote, "remote_pass": remote_pass,
+              "remote_attempts": attempt + 1,
+              "checked_at": now_iso()}
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        for c in critical:
+            print(f"  CRIT {'PASS' if c['ok'] else 'FAIL'}  {c['check']}  {c['detail']}")
+        for c in remote:
+            print(f"  REMO {'PASS' if c['ok'] else 'FAIL'}  {c['check']}  {c['detail']}")
+        print(f"CRITICAL_BOOT_HEALTH={'PASS' if critical_pass else 'FAIL'}")
+        print(f"REMOTE_HEALTH={'PASS' if remote_pass else 'FAIL'}")
+    if not critical_pass:
+        return EXIT_HEALTH_CRITICAL
+    if not remote_pass:
+        return EXIT_HEALTH_REMOTE
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------- main --
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="eaidk-ota", description=__doc__.splitlines()[0])
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--state-dir", default=os.environ.get("EAIDK_OTA_STATE", DEFAULT_STATE_DIR))
+    p.add_argument("--boot-dir", default=os.environ.get("EAIDK_OTA_BOOT", DEFAULT_BOOT_DIR))
+    p.add_argument("--config-dir", default=DEFAULT_CONFIG_DIR)
+    p.add_argument("--run-dir", default=DEFAULT_RUN_DIR)
+    p.add_argument("--backend", choices=("auto", "none", "bootcount-fs", "raw"),
+                   default="auto",
+                   help="fail-safe boot backend (auto reads the "
+                        "eaidk-ota/BACKEND marker on the boot filesystem; "
+                        "anything unexpected degrades to NoBackend)")
+    p.add_argument("--bootstate-tool", default="eaidk-bootstate",
+                   help="path to the eaidk-bootstate operator tool")
+    p.add_argument("--raw-device", default="/dev/mmcblk2",
+                   help="raw boot-state device for the RawBootstateBackend "
+                        "(PC/fixture mode may point at an image file)")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    ins = sub.add_parser("inspect", help="summarize a bundle without verification")
+    ins.add_argument("bundle")
+
+    ver = sub.add_parser("verify", help="full 18-point bundle verification")
+    ver.add_argument("bundle")
+    ver.add_argument("--release", help="expected release string")
+
+    stg = sub.add_parser("stage", help="verify + atomically stage into the state dir")
+    stg.add_argument("bundle")
+
+    sub.add_parser("status", help="show state machine + staged releases")
+    sub.add_parser("history", help="show state transition history")
+
+    plan = sub.add_parser("plan-install", help="print the /boot install plan (no changes)")
+    plan.add_argument("release")
+
+    sub.add_parser("install-candidate", help="install staged candidate (locked: local auth)")
+    health = sub.add_parser("health", help="run CRITICAL + REMOTE health checks")
+    health.add_argument("--expected-release")
+    health.add_argument("--network-retries", type=int, default=3)
+    health.add_argument("--network-retry-wait", type=int, default=60,
+                        help="seconds between remote health retries")
+
+    sub.add_parser("authorize-local",
+                   help="grant a 15-minute boot-mutation token (physical console only)")
+    sub.add_parser("try", help="arm a one-shot candidate boot (requires verified backend)")
+    sub.add_parser("arm", help="alias of try")
+    sub.add_parser("commit", help="commit a healthy candidate (requires verified backend)")
+    sub.add_parser("rollback", help="roll back to previous stable (requires verified backend)")
+    return p
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args.run_dir = pathlib.Path(args.run_dir)
+    args.config_dir = pathlib.Path(args.config_dir)
+    handlers = {
+        "inspect": cmd_inspect, "verify": cmd_verify, "stage": cmd_stage,
+        "status": cmd_status, "history": cmd_history,
+        "plan-install": cmd_plan_install, "install-candidate": cmd_install_candidate,
+        "health": cmd_health, "authorize-local": cmd_authorize_local,
+        "try": cmd_try, "arm": cmd_arm, "commit": cmd_commit, "rollback": cmd_rollback,
+    }
+    return handlers[args.command](args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

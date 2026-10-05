@@ -1,0 +1,622 @@
+#!/usr/bin/env python3
+"""eaidk-bootstate - boot-state file operator for the EAIDK-310 fail-safe boot.
+
+The fail-safe U-Boot variant (P3.6, candidate A) persists OTA boot state in a
+4-byte file on the /boot ext4 filesystem, read/written by U-Boot's
+BOOTCOUNT_EXT driver (drivers/bootcount/bootcount_ext.c, pinned
+v2024.07-rc1@38ea74d6).  This tool is the Linux-side operator for the SAME
+file, with byte-identical semantics:
+
+    offset 0  u8  magic             = 0xBD
+    offset 1  u8  version           = 1
+    offset 2  u8  bootcount
+    offset 3  u8  upgrade_available
+
+U-Boot only accepts the file when it is EXACTLY 4 bytes with correct magic
+and version (otherwise: fail closed to the stable boot, no write-back).
+This tool therefore refuses to write anything but a well-formed 4-byte
+record and never writes partial files (tmp + fsync + rename + dir fsync).
+
+Commands:
+  inspect   <file>                     report current on-disk state
+  arm       <file>                     write bootcount=0, upgrade_available=1
+  clear     <file>                     write bootcount=0, upgrade_available=0
+  simulate  <file> [options]           model U-Boot boots against the file
+
+Exit codes:
+  0  success (including inspect of a missing/corrupt file: that IS the state)
+  1  usage / I/O error
+  2  --strict inspect: file missing or not well-formed
+"""
+
+import argparse
+import fcntl
+import json
+import os
+import pathlib
+import struct
+import sys
+import zlib
+
+MAGIC = 0xBD
+VERSION = 1
+RECORD_LEN = 4
+
+ARMED = 1
+COMMITTED = 0
+
+# ---------------------------------------------------------------- raw backend
+# Mirrors drivers/bootcount/bootcount_eaidk310_raw.c (patch 0003, pinned
+# U-Boot v2024.07-rc1@38ea74d6) byte for byte.
+
+RAW_MAGIC = b"EA310BS1"
+RAW_VERSION = 1
+RAW_RECORD_SIZE = 512
+RAW_CRC_OFFSET = 508
+RAW_SEQ_OFFSET = 12
+RAW_SEQ_MAX = 0xFFFFFFFF
+RAW_DEFAULT_LBA_A = 0x6400  # 25600 (12 MiB + 512 KiB)
+RAW_DEFAULT_LBA_B = 0x7800  # 30720 (15 MiB)
+RAW_DEFAULT_LBA_DIAG = 0x6C00  # 27648 (13.5 MiB, breadcrumb)
+
+
+class RawFormatError(Exception):
+    pass
+
+
+def raw_encode(seq: int, bootcount: int, upgrade_available: int,
+               slot: int = 0, label: bytes = b"") -> bytes:
+    for name, value in (("bootcount", bootcount),
+                        ("upgrade_available", upgrade_available),
+                        ("candidate_slot", slot)):
+        if not 0 <= value <= 0xFF:
+            raise RawFormatError(f"{name} out of u8 range: {value}")
+    if not 0 <= seq <= RAW_SEQ_MAX:
+        raise RawFormatError(f"sequence out of u32 range: {seq}")
+    if len(label) > 16:
+        raise RawFormatError("candidate label longer than 16 bytes")
+    buf = bytearray(RAW_RECORD_SIZE)
+    buf[0:8] = RAW_MAGIC
+    buf[8] = RAW_VERSION
+    buf[9] = bootcount
+    buf[10] = upgrade_available
+    buf[11] = slot
+    struct.pack_into("<I", buf, RAW_SEQ_OFFSET, seq)
+    buf[16:16 + len(label)] = label
+    struct.pack_into("<I", buf, RAW_CRC_OFFSET,
+                     zlib.crc32(bytes(buf[:RAW_CRC_OFFSET])) & 0xFFFFFFFF)
+    return bytes(buf)
+
+
+def raw_parse(record: bytes) -> dict:
+    """Interpret one 512-byte sector exactly like the U-Boot driver."""
+    if len(record) != RAW_RECORD_SIZE:
+        return {"usable": False, "reason": f"length {len(record)} != 512"}
+    if record[0:8] != RAW_MAGIC:
+        return {"usable": False, "reason": "magic mismatch"}
+    if record[8] != RAW_VERSION:
+        return {"usable": False, "reason": "version mismatch"}
+    stored = struct.unpack_from("<I", record, RAW_CRC_OFFSET)[0]
+    computed = zlib.crc32(record[:RAW_CRC_OFFSET]) & 0xFFFFFFFF
+    if stored != computed:
+        return {"usable": False,
+                "reason": f"crc mismatch (stored {stored:#010x} != {computed:#010x})"}
+    seq = struct.unpack_from("<I", record, RAW_SEQ_OFFSET)[0]
+    label = record[16:32].split(b"\x00", 1)[0].decode("ascii", "replace")
+    return {"usable": True, "sequence": seq,
+            "bootcount": record[9], "upgrade_available": record[10],
+            "candidate_slot": record[11], "candidate_label": label}
+
+
+def raw_select(records: list) -> dict:
+    """Dual-copy selection: highest usable sequence; equal-sequence
+    conflicts with different payload reject BOTH copies (fail closed)."""
+    parsed = [raw_parse(r) for r in records]
+    usable = [i for i, p in enumerate(parsed) if p["usable"]]
+    if not usable:
+        return {"selected": -1, "parsed": parsed,
+                "state": {"bootcount": 0, "upgrade_available": 0,
+                          "fail_closed": True}}
+    best = max(usable, key=lambda i: parsed[i]["sequence"])
+    if len(usable) == 2 and \
+            parsed[0]["sequence"] == parsed[1]["sequence"] and \
+            records[0][:RAW_CRC_OFFSET] != records[1][:RAW_CRC_OFFSET]:
+        return {"selected": -1, "parsed": parsed,
+                "conflict": True,
+                "state": {"bootcount": 0, "upgrade_available": 0,
+                          "fail_closed": True}}
+    p = parsed[best]
+    return {"selected": best, "parsed": parsed,
+            "sequence": p["sequence"],
+            "state": {"bootcount": p["bootcount"],
+                      "upgrade_available": p["upgrade_available"],
+                      "candidate_slot": p["candidate_slot"],
+                      "candidate_label": p["candidate_label"],
+                      "fail_closed": False}}
+
+
+class RawBootState:
+    """Sector-exact operator for the dual-copy raw boot-state region.
+
+    Image-file mode is the PC/fixture mode (plain file whose LBAs map
+    linearly).  Block-device mode defaults to READ-ONLY: any write to a
+    block device requires --allow-block-write (an anti-footgun gate, not
+    a security boundary -- the real gates are the eaidk-ota marker and
+    local authorization).  All writes are full-sector pwrite + O_SYNC
+    under an exclusive flock; bounds are checked against the device size.
+    """
+
+    def __init__(self, path: pathlib.Path, lba_a: int = RAW_DEFAULT_LBA_A,
+                 lba_b: int = RAW_DEFAULT_LBA_B, writable: bool = False):
+        self.path = path
+        self.lba_a = lba_a
+        self.lba_b = lba_b
+        self.writable = writable
+        self.fd = os.open(path, os.O_RDWR if writable else os.O_RDONLY)
+        # block devices report st_size 0; lseek(SEEK_END) yields their size
+        self.size = os.lseek(self.fd, 0, os.SEEK_END)
+        os.lseek(self.fd, 0, os.SEEK_SET)
+        need = (max(lba_a, lba_b) + 1) * RAW_RECORD_SIZE
+        if self.size < need:
+            os.close(self.fd)
+            raise RawFormatError(
+                f"{path} too small: {self.size} < {need} bytes "
+                f"(LBA range not covered)")
+        # the lock must live on a writable filesystem: /run for device
+        # nodes, alongside the file for image fixtures
+        if path.is_block_device() if hasattr(path, "is_block_device") else False:
+            lock_dir = pathlib.Path("/run/eaidk-bootstate")
+            lock_dir.mkdir(parents=True, exist_ok=True)
+            lock = lock_dir / (path.name + ".rawlock")
+        else:
+            lock = path.with_name(path.name + ".rawlock")
+        self.lock_fd = os.open(lock, os.O_WRONLY | os.O_CREAT, 0o600)
+        fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
+
+    def close(self):
+        fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
+        os.close(self.lock_fd)
+        os.close(self.fd)
+
+    def _sector(self, lba: int) -> bytes:
+        return os.pread(self.fd, RAW_RECORD_SIZE, lba * RAW_RECORD_SIZE)
+
+    @staticmethod
+    def parse_diag(record: bytes) -> dict:
+        """Interpret one 512-byte breadcrumb sector (EA310BDG, driver
+        diag write; last-write-wins, no security role)."""
+        if len(record) != RAW_RECORD_SIZE:
+            return {"present": False}
+        if record[0:8] != b"EA310BDG":
+            return {"present": False}
+        import struct as _s
+        import zlib as _z
+        if _s.unpack_from("<I", record, 508)[0] !=                 (_z.crc32(record[:508]) & 0xFFFFFFFF):
+            return {"present": True, "corrupt": True}
+        codes = {0: "device-not-found", 1: "identity-mismatch",
+                 2: "read-error", 3: "no-usable-record", 4: "committed",
+                 5: "armed", 6: "store-write-error", 7: "store-refused",
+                 8: "store-ok", 9: "seq-exhausted"}
+        stages = {0: "load", 1: "store"}
+        cap = _s.unpack_from("<I", record, 28)[0] * 0x100000000 +             _s.unpack_from("<I", record, 24)[0]
+        name = record[16:24].split(b'\x00', 1)[0].decode("ascii", "replace")
+        return {"present": True, "stage": stages.get(record[9], record[9]),
+                "result": codes.get(record[10], record[10]),
+                "device_present": bool(record[11]),
+                "manfid": record[12], "name": name, "capacity": cap,
+                "selected_seq": _s.unpack_from("<I", record, 32)[0],
+                "selected_copy": record[36],
+                "upgrade_available": record[37], "bootcount": record[38],
+                "bootcount_stored": bool(record[39])}
+
+    def read_state(self) -> dict:
+        recs = [self._sector(self.lba_a), self._sector(self.lba_b)]
+        sel = raw_select(recs)
+        out = {
+            "lba_a": self.lba_a, "lba_b": self.lba_b,
+            "records": sel["parsed"],
+            "selected": sel["selected"],
+            **sel["state"],
+        }
+        if (max(self.lba_a, self.lba_b) + 1) * RAW_RECORD_SIZE <= self.size:
+            diag = self.parse_diag(self._sector(RAW_DEFAULT_LBA_DIAG))
+            if diag.get("present"):
+                out["diag"] = diag
+        if sel["selected"] >= 0:
+            out["sequence"] = sel["sequence"]
+        if sel.get("conflict"):
+            out["conflict"] = True
+        return out
+
+    def _write_copy(self, lba: int, record: bytes) -> None:
+        if not self.writable:
+            raise RawFormatError("read-only mode; writes refused")
+        os.pwrite(self.fd, record, lba * RAW_RECORD_SIZE)
+        os.fsync(self.fd)
+
+    def arm(self, label: bytes = b"") -> dict:
+        state = self.read_state()
+        if state.get("fail_closed"):
+            seq = 0
+        else:
+            seq = state["sequence"]
+        if seq == RAW_SEQ_MAX:
+            raise RawFormatError("sequence exhausted")
+        self._write_copy(self.lba_a, raw_encode(seq + 1, 0, ARMED, 0, label))
+        return self.read_state()
+
+    def clear(self) -> dict:
+        state = self.read_state()
+        if state.get("fail_closed"):
+            seq = 0
+        else:
+            seq = state["sequence"]
+        if seq == RAW_SEQ_MAX:
+            raise RawFormatError("sequence exhausted")
+        # clear always targets the copy NOT selected (driver store rule),
+        # falling back to A when nothing is selected
+        target = self.lba_a
+        if state["selected"] == 0:
+            target = self.lba_b
+        elif state["selected"] == 1:
+            target = self.lba_a
+        self._write_copy(target, raw_encode(seq + 1, 0, COMMITTED))
+        return self.read_state()
+
+
+def raw_simulate_boot(state: dict, bootlimit: int) -> dict:
+    """Model one U-Boot boot against a raw dual-copy state (driver
+    semantics: store increments into the OTHER copy; candidate requires
+    upgrade_available AND a successful store)."""
+    if state.get("fail_closed"):
+        bootcount, upgrade = 0, 0
+        seq = -1
+    else:
+        bootcount = state["bootcount"]
+        upgrade = state["upgrade_available"]
+        seq = state["sequence"]
+    stored = bootcount
+    file_after = dict(bootcount=bootcount, upgrade_available=upgrade,
+                      sequence=seq)
+    if upgrade == ARMED:
+        stored = (bootcount + 1) & 0xFF
+        file_after = dict(bootcount=stored, upgrade_available=upgrade,
+                          sequence=(seq + 1) if seq != RAW_SEQ_MAX else seq)
+    if bootlimit > 0 and stored > bootlimit:
+        route = "altbootcmd(stable)"
+    elif upgrade == ARMED and stored >= 1:
+        route = "bootcmd(candidate)"
+    else:
+        route = "bootcmd(stable)"
+    return {"route": route, "env": {"bootcount": stored,
+                                    "upgrade_available": upgrade},
+            "file_after": file_after}
+
+
+class FormatError(Exception):
+    pass
+
+
+def encode(bootcount: int, upgrade_available: int) -> bytes:
+    for name, value in (("bootcount", bootcount),
+                        ("upgrade_available", upgrade_available)):
+        if not 0 <= value <= 0xFF:
+            raise FormatError(f"{name} out of u8 range: {value}")
+    return bytes((MAGIC, VERSION, bootcount, upgrade_available))
+
+
+def parse_record(raw: bytes) -> dict:
+    """Parse file bytes into a state dict.  Mirrors U-Boot bootcount_load().
+
+    U-Boot (with the P3.6 fail-closed patch) treats every abnormal file as
+    "not armed": bootcount 0, upgrade_available 0, and it will NOT write the
+    file back.  parse_record reports the same interpretation.
+    """
+    if len(raw) != RECORD_LEN:
+        return {"state": "invalid", "reason": f"length {len(raw)} != {RECORD_LEN}",
+                "bootcount": 0, "upgrade_available": 0, "fail_closed": True}
+    if raw[0] != MAGIC:
+        return {"state": "invalid", "reason": f"magic 0x{raw[0]:02x} != 0x{MAGIC:02x}",
+                "bootcount": 0, "upgrade_available": 0, "fail_closed": True}
+    if raw[1] != VERSION:
+        return {"state": "invalid", "reason": f"version {raw[1]} != {VERSION}",
+                "bootcount": 0, "upgrade_available": 0, "fail_closed": True}
+    return {"state": "valid",
+            "bootcount": raw[2],
+            "upgrade_available": raw[3],
+            "armed": raw[3] == ARMED,
+            "fail_closed": False}
+
+
+def read_state(path: pathlib.Path) -> dict:
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return {"state": "missing", "reason": "file does not exist",
+                "bootcount": 0, "upgrade_available": 0, "fail_closed": True,
+                "writable": False}
+    state = parse_record(raw)
+    state["writable"] = True
+    return state
+
+
+def atomic_write(path: pathlib.Path, data: bytes) -> None:
+    """tmp + fsync + rename + directory fsync.  Never leaves partial files."""
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+    dirfd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+
+
+class FileLock:
+    """Advisory whole-operation lock on <file>.lock (same filesystem)."""
+
+    def __init__(self, path: pathlib.Path):
+        self.lock_path = path.with_name(path.name + ".lock")
+
+    def __enter__(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(self.lock_path, os.O_WRONLY | os.O_CREAT, 0o644)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        os.close(self.fd)
+        return False
+
+
+def simulate_boot(state: dict, bootlimit: int) -> dict:
+    """Model one U-Boot boot against `state`.  Mirrors the pinned driver plus
+    the P3.6 fail-closed patch and include/bootcount.h bootcount_inc().
+
+    Returns the route U-Boot takes and the resulting file/env state.
+    """
+    loaded = read_state(state) if isinstance(state, (str, pathlib.Path)) else state
+    bootcount = loaded["bootcount"]
+    upgrade_available = loaded["upgrade_available"]
+
+    stored = bootcount
+    if upgrade_available == ARMED:
+        stored = (bootcount + 1) & 0xFF  # bootcount_store(++bootcount), u8 wrap
+    env_bootcount = stored
+    env_upgrade = upgrade_available
+
+    # bootcount_error(): compare the STORED file value against bootlimit
+    if bootlimit > 0 and stored > bootlimit:
+        route = "altbootcmd(stable)"
+    elif env_upgrade == ARMED and env_bootcount >= 1:
+        route = "bootcmd(candidate)"
+    else:
+        route = "bootcmd(stable)"
+
+    return {"route": route, "env": {"bootcount": env_bootcount,
+                                    "upgrade_available": env_upgrade},
+            "file_after": {"bootcount": stored,
+                           "upgrade_available": upgrade_available}}
+
+
+def cmd_inspect(args) -> int:
+    if args.backend == "raw":
+        state = open_raw(args).read_state()
+        emit_raw(args, state)
+        if args.strict and state.get("fail_closed"):
+            return 2
+        return 0
+    state = read_state(pathlib.Path(args.file))
+    emit(args, state)
+    if args.strict and state["state"] != "valid":
+        return 2
+    return 0
+
+
+def open_raw(args) -> RawBootState:
+    if args.raw_device:
+        if args.raw_image:
+            raise FormatError("--raw-device and --raw-image are exclusive")
+        path = pathlib.Path(args.raw_device)
+        writable = args.allow_block_write
+    elif args.raw_image:
+        path = pathlib.Path(args.raw_image)
+        writable = True
+    else:
+        raise FormatError("raw backend needs --raw-image (fixture) or --raw-device")
+    return RawBootState(path, args.raw_lba_a, args.raw_lba_b,
+                        writable=writable)
+
+
+def cmd_write(args, upgrade_available: int) -> int:
+    if args.backend == "raw":
+        raw = open_raw(args)
+        try:
+            label = (args.label or "").encode("ascii")[:16]
+            state = raw.arm(label) if upgrade_available else raw.clear()
+        finally:
+            raw.close()
+        emit_raw(args, {"action": "arm" if upgrade_available else "clear",
+                        **state})
+        return 0
+    path = pathlib.Path(args.file)
+    with FileLock(path):
+        atomic_write(path, encode(0, upgrade_available))
+    state = read_state(path)
+    emit(args, {"action": "arm" if upgrade_available else "clear", **state})
+    return 0
+
+
+def cmd_simulate(args) -> int:
+    if args.backend == "raw":
+        raw = open_raw(args)
+        try:
+            current = raw.read_state()
+        finally:
+            raw.close()
+        boots = []
+        state = current
+        for _ in range(args.boots):
+            step = raw_simulate_boot(state, args.bootlimit)
+            boots.append(step)
+            fa = step["file_after"]
+            state = {"bootcount": fa["bootcount"],
+                     "upgrade_available": fa["upgrade_available"],
+                     "sequence": fa["sequence"],
+                     "fail_closed": False, "selected": 0}
+        emit_raw(args, {"initial": current, "bootlimit": args.bootlimit,
+                        "boots": boots})
+        return 0
+    path = pathlib.Path(args.file)
+    current = read_state(path)
+    boots = []
+    state = current
+    for _ in range(args.boots):
+        step = simulate_boot(state if state["writable"] else state, args.bootlimit)
+        boots.append(step)
+        # chain: file becomes the stored record for the next boot
+        state = {"state": "valid",
+                 "bootcount": step["file_after"]["bootcount"],
+                 "upgrade_available": step["file_after"]["upgrade_available"],
+                 "armed": step["file_after"]["upgrade_available"] == ARMED,
+                 "fail_closed": False,
+                 "writable": state["writable"] or True}
+    emit(args, {"initial": current, "bootlimit": args.bootlimit, "boots": boots})
+    return 0
+
+
+def emit_raw(args, payload) -> None:
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if "route" in payload:
+        print(f"bootlimit: {payload['bootlimit']}")
+        for i, step in enumerate(payload["boots"], 1):
+            fa = step["file_after"]
+            print(f"boot {i}: seq={fa['sequence']} "
+                  f"(bootcount={fa['bootcount']}, "
+                  f"upgrade_available={fa['upgrade_available']}) -> "
+                  f"{step['route']}")
+        initial = payload["initial"]
+        print(f"initial: selected copy = {initial['selected']} "
+              f"(bootcount={initial.get('bootcount')}, "
+              f"upgrade_available={initial.get('upgrade_available')}, "
+              f"fail_closed={initial.get('fail_closed')})")
+        return
+    if "action" in payload:
+        print(f"action:           {payload['action']}")
+    print(f"backend:          raw (A@{payload.get('lba_a')}, B@{payload.get('lba_b')})")
+    print(f"selected:         copy {payload.get('selected')}")
+    for tag, rec in (("A", payload["records"][0]),
+                     ("B", payload["records"][1])):
+        if rec["usable"]:
+            print(f"record {tag}:      usable seq={rec['sequence']} "
+                  f"bootcount={rec['bootcount']} "
+                  f"upgrade_available={rec['upgrade_available']} "
+                  f"slot={rec['candidate_slot']} label={rec['candidate_label']!r}")
+        else:
+            print(f"record {tag}:      unusable ({rec['reason']})")
+    if payload.get("fail_closed"):
+        print("u-boot behavior:  fail closed -> stable boot, no writes")
+    if payload.get("conflict"):
+        print("conflict:         equal sequence with different payload -> both rejected")
+
+
+def emit(args, payload) -> None:
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        if "route" in payload:
+            print(f"bootlimit: {payload['bootlimit']}")
+            for i, step in enumerate(payload["boots"], 1):
+                env = step["env"]
+                fa = step["file_after"]
+                print(f"boot {i}: file(bootcount={fa['bootcount']}, "
+                      f"upgrade_available={fa['upgrade_available']}) -> "
+                      f"{step['route']}")
+            initial = payload["initial"]
+            print(f"initial file: {initial['state']} "
+                  f"(bootcount={initial['bootcount']}, "
+                  f"upgrade_available={initial['upgrade_available']})")
+            return
+        if "action" in payload:
+            print(f"action:           {payload['action']}")
+        print(f"file:             {args.file}")
+        print(f"state:            {payload['state']}")
+        print(f"bootcount:        {payload['bootcount']}")
+        print(f"upgrade_available:{payload['upgrade_available']}")
+        if "reason" in payload:
+            print(f"reason:           {payload['reason']}")
+        if payload.get("fail_closed"):
+            print("u-boot behavior:  fail closed -> stable boot, file not written")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="eaidk-bootstate",
+        description="operator for the fail-safe boot state (ext4 file or "
+                    "raw dual-copy sectors)")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add_backend_opts(p, with_file=True):
+        p.add_argument("--backend", choices=("ext4", "raw"), default="ext4")
+        if with_file:
+            p.add_argument("file", nargs="?", help="bootstate file (ext4 backend)")
+        p.add_argument("--raw-image", help="fixture image file (raw backend)")
+        p.add_argument("--raw-device", help="block device (raw backend; "
+                                            "read-only unless --allow-block-write)")
+        p.add_argument("--raw-lba-a", type=lambda x: int(x, 0),
+                       default=RAW_DEFAULT_LBA_A)
+        p.add_argument("--raw-lba-b", type=lambda x: int(x, 0),
+                       default=RAW_DEFAULT_LBA_B)
+        p.add_argument("--allow-block-write", action="store_true",
+                       help="permit writing a raw BLOCK device (image files "
+                            "are always writable in raw mode)")
+        p.add_argument("--label", help="candidate label for raw arm (<=16 bytes)")
+
+    p = sub.add_parser("inspect", help="report current on-disk state")
+    add_backend_opts(p)
+    p.add_argument("--strict", action="store_true",
+                   help="exit 2 when the state is missing or not well-formed")
+    p.set_defaults(func=cmd_inspect)
+
+    p = sub.add_parser("arm", help="write bootcount=0 upgrade_available=1")
+    add_backend_opts(p)
+    p.set_defaults(func=lambda a: cmd_write(a, ARMED))
+
+    p = sub.add_parser("clear", help="write bootcount=0 upgrade_available=0")
+    add_backend_opts(p)
+    p.set_defaults(func=lambda a: cmd_write(a, COMMITTED))
+
+    p = sub.add_parser("simulate", help="model consecutive U-Boot boots")
+    add_backend_opts(p)
+    p.add_argument("--bootlimit", type=int, default=1)
+    p.add_argument("--boots", type=int, default=1)
+    p.set_defaults(func=cmd_simulate)
+
+    for p in (parser, ):
+        p.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+    args, extra = parser.parse_known_args()
+    if extra:
+        # allow --json after the subcommand (argparse quirk)
+        if extra == ["--json"]:
+            args.json = True
+        else:
+            parser.error(f"unrecognized arguments: {' '.join(extra)}")
+    try:
+        return args.func(args)
+    except FormatError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
