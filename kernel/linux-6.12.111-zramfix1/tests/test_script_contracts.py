@@ -561,6 +561,20 @@ esac
 
 
 class ScriptContractTests(unittest.TestCase):
+    @staticmethod
+    def _wsl_workspace_ready(*paths) -> bool:
+        """True when the regenerable WSL build workspace still holds the
+        referenced outputs.  P5 removed these deliberately; the checks
+        below are build-machine acceptance tests and must skip rather
+        than fail when the workspace is absent."""
+        if os.name != "nt":
+            return False
+        probe = subprocess.run(
+            ["wsl", "-d", "Ubuntu-24.04", "-u", "root", "--", "bash", "-c",
+             " ".join(f"test -e {p} &&" for p in paths) + " true"],
+            text=True, capture_output=True)
+        return probe.returncode == 0
+
     def test_emmc_model_uses_the_mmc_sysfs_identity(self):
         text = (SCRIPTS / "deploy-emmc.sh").read_text(encoding="utf-8")
         self.assertIn("/sys/block/mmcblk2/device/name", text)
@@ -701,6 +715,8 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn('chroot "$CHROOT_DIR" env SOURCE_DATE_EPOCH=', text)
 
     def test_initramfs_preflight_accepts_the_verified_task5_outputs(self):
+        if not self._wsl_workspace_ready("/home/Fog/eaidk310-kernel/initramfs-zramfix1-6.12.111"):
+            self.skipTest("regenerable WSL build workspace removed (P5)")
         if os.name != "nt":
             self.skipTest("Windows WSL integration test")
         path = SCRIPTS / "build-initramfs-arm64.sh"
@@ -721,6 +737,8 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn("INITRAMFS_PREFLIGHT_GATE=PASS", result.stdout)
 
     def test_current_initramfs_chroot_has_the_complete_policy_context(self):
+        if not self._wsl_workspace_ready("/home/Fog/eaidk310-kernel/chroot-trixie-arm64-zramfix1", "/home/Fog/eaidk310-kernel/build-zramfix1-6.12.111/.config"):
+            self.skipTest("regenerable WSL build workspace removed (P5)")
         if os.name != "nt":
             self.skipTest("Windows WSL integration test")
         chroot = "/home/Fog/eaidk310-kernel/chroot-trixie-arm64-zramfix1"
@@ -743,6 +761,8 @@ class ScriptContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_current_uinitrd_header_uses_the_fixed_source_date_epoch(self):
+        if not self._wsl_workspace_ready("/home/Fog/eaidk310-kernel/initramfs-zramfix1-6.12.111/uInitrd-6.12.111-eaidk310-zramfix1"):
+            self.skipTest("regenerable WSL build workspace removed (P5)")
         if os.name != "nt":
             self.skipTest("Windows WSL integration test")
         uinitrd = "/home/Fog/eaidk310-kernel/initramfs-zramfix1-6.12.111/uInitrd-6.12.111-eaidk310-zramfix1"
@@ -769,6 +789,8 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn(f"Image Name:   {expected_name}", verify_script)
 
     def test_package_dry_run_reports_only_versioned_boot_targets(self):
+        if not self._wsl_workspace_ready("/home/Fog/eaidk310-kernel/stage-zramfix1-6.12.111"):
+            self.skipTest("regenerable WSL build workspace removed (P5)")
         if os.name != "nt":
             self.skipTest("Windows WSL integration test")
         path = SCRIPTS / "package-artifacts.sh"
@@ -800,6 +822,8 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn("write=false", result.stdout)
 
     def test_bundle_verifier_accepts_the_packaged_task6_artifacts(self):
+        if not self._wsl_workspace_ready("/home/Fog/eaidk310-kernel/artifacts/eaidk310-linux-6.12.111-eaidk310-zramfix1"):
+            self.skipTest("regenerable WSL build workspace removed (P5)")
         if os.name != "nt":
             self.skipTest("Windows WSL integration test")
         path = SCRIPTS / "verify-bundle.sh"
@@ -823,6 +847,8 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn("BUNDLE_GATE=PASS", result.stdout)
 
     def test_packaged_deployer_defaults_to_a_non_writing_failure_without_inputs(self):
+        if not self._wsl_workspace_ready("/home/Fog/eaidk310-kernel/artifacts/eaidk310-linux-6.12.111-eaidk310-zramfix1"):
+            self.skipTest("regenerable WSL build workspace removed (P5)")
         if os.name != "nt":
             self.skipTest("Windows WSL integration test")
         placeholder = (
