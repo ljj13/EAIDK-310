@@ -2,6 +2,10 @@
 
 本目录为 EAIDK310 生成两个 U-Boot v2024.07-rc1 变体：`control` 使用正确板级描述但关闭 Wi-Fi SDIO；`sdio-handoff` 仅额外启用 GPIO1_C2 pwrseq 与 125MHz SDIO。两者用于验证作者成功镜像是否依赖 U-Boot 对无线模组的上电交接。
 
+P3.6 新增第三个变体 `failsafe-bootcount-fs`（candidate A）：在 control 之上加入 `BOOTCOUNT_EXT` 引导计数文件后端（4 字节状态文件，`/eaidk-ota/bootcount.bin`）、`CMD_SYSBOOT`、compiled default env 启动策略（`bootlimit=1` / candidate `bootcmd` / stable `altbootcmd`），并对 `bootcount_ext.c` 做 fail-closed 加固（缺失/损坏/超限状态一律回退 stable，绝不写回）。设计、审计与刷写方案见 `docs/FAILSAFE-BOOT.md` 与 `ota/docs/FLASH-PLAN-P36.md`；构建用 `scripts/build-cross-failsafe.sh`（同时产出 control 基准做二进制/DTB/默认 env 对照）。
+
+P3.6-B 新增第四个变体 `failsafe-raw`（candidate B）：自定义 `bootcount_eaidk310_raw` 驱动（patch 0003），把双副本 CRC32 保护的 512 字节 bootstate 记录放在 eMMC 12–16 MiB 无分区尾带（LBA 0x6400/0x7800，经四镜像+板端只读复核审计，见 `docs/EMMC-RAW-REGION.md`）——完全脱离文件系统/journal/持久 env，掉电语义"至多丢最新一次更新"。设备身份门（manfid 0xd6 + `HBD08G` + 容量）不符即 fail-closed。两候选对比与最终推荐见 `docs/BACKEND-COMPARISON.md`（推荐 RAW_REDUNDANT）。构建用 `scripts/build-cross-failsafe-raw.sh`。两候选目前均**只构建未刷写**；control/sdio-handoff 产物与 0001 补丁保持字节不动。
+
 ## 安全边界
 
 - 构建脚本只读取干净的上游源码，并把补丁应用到 `mktemp` 生成的临时副本。

@@ -1,0 +1,156 @@
+diff --git a/configs/eaidk310-failsafe-raw-rk3328_defconfig b/configs/eaidk310-failsafe-raw-rk3328_defconfig
+index 0000000..0000000
+--- a/configs/eaidk310-failsafe-raw-rk3328_defconfig
++++ b/configs/eaidk310-failsafe-raw-rk3328_defconfig
+@@ -48,6 +48,12 @@ CONFIG_SYS_BOOTCOUNT_RAW_DIAG=y
+ CONFIG_SYS_BOOTCOUNT_RAW_MMC_MANFID=0xd6
+ CONFIG_SYS_BOOTCOUNT_RAW_MMC_NAME="HBD08G"
+ CONFIG_SYS_BOOTCOUNT_RAW_MMC_MINSIZE=0x1d2000000
++CONFIG_SYS_BOOTCOUNT_TRIAL_WDT_TIMEOUT_MS=30000
++CONFIG_WATCHDOG=y
++CONFIG_WATCHDOG_AUTOSTART=n
++CONFIG_WDT=y
++CONFIG_DESIGNWARE_WATCHDOG=y
++CONFIG_CMD_WDT=y
+ CONFIG_BOOTCOUNT_BOOTLIMIT=1
+ CONFIG_USE_BOOTCOMMAND=y
+ CONFIG_BOOTCOMMAND="if test ${upgrade_available} -eq 1 -a ${bootcount_stored} -eq 1; then sysboot mmc 0:1 ext2 ${scriptaddr} /extlinux/extlinux-candidate.conf; fi; bootflow scan"
+diff --git a/drivers/bootcount/Kconfig b/drivers/bootcount/Kconfig
+index 0000000..0000000
+--- a/drivers/bootcount/Kconfig
++++ b/drivers/bootcount/Kconfig
+@@ -44,6 +44,18 @@ config BOOTCOUNT_EAIDK310_RAW
+ 	  currently selected one, so a torn write can cost at most the
+ 	  newest update, never an uncounted candidate trial.
+ 
++config SYS_BOOTCOUNT_TRIAL_WDT_TIMEOUT_MS
++	int "Trial watchdog timeout in milliseconds (BOOTCOUNT_EAIDK310_RAW)"
++	default 30000
++	depends on BOOTCOUNT_EAIDK310_RAW
++	help
++	  Timeout requested from the hardware watchdog when the raw
++	  bootcount driver confirms a candidate trial boot (armed state,
++	  increment within the bootlimit).  With the EAIDK-310 pclk_wdt at
++	  75 MHz the DesignWare TOP granularity rounds this to 28.6 s
++	  (TOP15, the hardware maximum); the running kernel auto-pings the
++	  watchdog until a userspace feed service takes over.
++
+ config BOOTCOUNT_AM33XX
+ 	bool "Boot counter in AM33XX RTC IP block"
+ 	depends on AM33XX || SOC_DA8XX
+diff --git a/drivers/bootcount/bootcount_eaidk310_raw.c b/drivers/bootcount/bootcount_eaidk310_raw.c
+index 0000000..0000000
+--- a/drivers/bootcount/bootcount_eaidk310_raw.c
++++ b/drivers/bootcount/bootcount_eaidk310_raw.c
+@@ -44,10 +44,13 @@
+ 
+ #include <blk.h>
+ #include <bootcount.h>
++#include <dm.h>
++#include <dm/uclass.h>
+ #include <env.h>
+ #include <mmc.h>
+ #include <part.h>
+ #include <u-boot/crc.h>
++#include <wdt.h>
+ 
+ #define EA310_BS_MAGIC		"EA310BS1"
+ #define EA310_BS_VERSION	1
+@@ -427,6 +430,46 @@ void bootcount_store(ulong a)
+ 
+ 	bootcount_store_ok = 1;
+ 	env_set_ulong("bootcount_stored", bootcount_store_ok);
++
++	/*
++	 * Trial watchdog (P3.7): the increment that lands within the
++	 * bootlimit IS the candidate trial boot.  Start the hardware
++	 * watchdog now so any hang after this point (U-Boot load, kernel,
++	 * initramfs, userspace until the trial feed service takes over)
++	 * produces a SoC reset; the next boot then exceeds the bootlimit
++	 * and altbootcmd rolls back to the stable entry.  Rollback boots
++	 * (increment exceeding the bootlimit) must NOT start the watchdog.
++	 * Best effort: a missing or broken WDT is reported but never blocks
++	 * the boot, and the bootcount/stored-state remains the sole
++	 * rollback decision input.
++	 */
++	if (env_get_ulong("upgrade_available", 10, 0) == 1) {
++		unsigned long bootlimit = env_get_ulong("bootlimit", 10, 0);
++		unsigned long bc_new = seq + 1;	/* the value just stored */
++		if (bootlimit > 0 && bc_new <= bootlimit) {
++			struct udevice *wdt_dev = NULL;
++			int rc;
++
++			/* uclass_first_device() probes on demand (void in
++			 * v2024.07; probe failures leave *devp NULL); the
++			 * board and the sandbox each expose one WDT. */
++			uclass_first_device(UCLASS_WDT, &wdt_dev);
++			if (!wdt_dev) {
++				puts("bootcount-raw: no watchdog device\n");
++				env_set_ulong("trial_wdt", 0);
++			} else {
++				rc = wdt_start(wdt_dev,
++					CONFIG_SYS_BOOTCOUNT_TRIAL_WDT_TIMEOUT_MS,
++					0);
++				printf("bootcount-raw: trial watchdog via %s (%u ms) rc=%d\n",
++				       wdt_dev->name,
++				       (unsigned)CONFIG_SYS_BOOTCOUNT_TRIAL_WDT_TIMEOUT_MS,
++				       rc);
++				env_set_ulong("trial_wdt", rc == 0 ? 1 : 0);
++			}
++		}
++	}
++
+ 	ea310_diag_write(1, EA310_DIAG_STORE_OK, 1,
+ 			 ea310_diag_manfid, ea310_diag_name,
+ 			 ea310_diag_capacity, seq + 1,
+diff --git a/drivers/watchdog/designware_wdt.c b/drivers/watchdog/designware_wdt.c
+index 0000000..0000000
+--- a/drivers/watchdog/designware_wdt.c
++++ b/drivers/watchdog/designware_wdt.c
+@@ -118,17 +118,18 @@ static int designware_wdt_probe(struct udevice *dev)
+ #if CONFIG_IS_ENABLED(CLK)
+ 	struct clk clk;
+ 
++	/*
++	 * Prefer the DT clock; fall back to CFG_DW_WDT_CLOCK_KHZ when the
++	 * SoC clock driver cannot resolve/enable it, so that watchdog
++	 * boot policies (e.g. the EAIDK-310 trial watchdog) still work.
++	 */
+ 	ret = clk_get_by_index(dev, 0, &clk);
+-	if (ret)
+-		return ret;
+-
+-	ret = clk_enable(&clk);
+-	if (ret)
+-		return ret;
+-
+-	priv->clk_khz = clk_get_rate(&clk) / 1000;
++	if (!ret)
++		ret = clk_enable(&clk);
++	if (!ret)
++		priv->clk_khz = clk_get_rate(&clk) / 1000;
+ 	if (!priv->clk_khz)
+-		return -EINVAL;
++		priv->clk_khz = CFG_DW_WDT_CLOCK_KHZ;
+ #else
+ 	priv->clk_khz = CFG_DW_WDT_CLOCK_KHZ;
+ #endif
+diff --git a/include/configs/rk3328_common.h b/include/configs/rk3328_common.h
+index 0000000..0000000
+--- a/include/configs/rk3328_common.h
++++ b/include/configs/rk3328_common.h
+@@ -1,4 +1,14 @@
+ /* SPDX-License-Identifier: GPL-2.0+ */
++
++/*
++ * Measured pclk_wdt on EAIDK-310 (HBD08G board): 75 MHz.  Used by the
++ * DesignWare watchdog driver as a fallback when the DT clock is not
++ * resolvable in U-Boot.  TORR15 at 75 MHz = 2^31 / 75 MHz = 28.6 s.
++ */
++#ifdef CONFIG_DESIGNWARE_WATCHDOG
++#define CFG_DW_WDT_CLOCK_KHZ	75000
++#endif
++
+ /*
+  * (C) Copyright 2016 Rockchip Electronics Co., Ltd
+  */
