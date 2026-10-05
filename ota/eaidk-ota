@@ -1011,8 +1011,45 @@ def cmd_install_candidate(args) -> int:
         if sha256_file(dst) != sha256_file(src):
             return fail_exit(EXIT_ERROR, f"post-install hash mismatch: {dst}")
         installed[str(dst)] = sha256_file(src)
+
+    # Rootfs modules: without them every =m subsystem (zram, nf_tables,
+    # tun, ...) fails on the candidate boot -- the P4 first-attempt root
+    # cause.  Deploy the staged tree atomically; depmod metadata ships in
+    # the bundle and its presence is verified.
+    mod_src = staging / "root" / "lib" / "modules" / release
+    mod_dst = pathlib.Path("/lib/modules") / release
+    if not mod_src.is_dir():
+        return fail_exit(EXIT_ERROR, f"staged modules tree missing: {mod_src}")
+    if not (mod_src / "modules.dep").is_file():
+        return fail_exit(EXIT_ERROR,
+                         "staged modules tree lacks modules.dep (depmod "
+                         "metadata); refusing to install")
+    if mod_dst.exists():
+        marker = mod_dst / ".eaidk-ota-installed"
+        if not marker.is_file():
+            return fail_exit(EXIT_CONFLICT,
+                             f"{mod_dst} already exists and was not installed "
+                             "by eaidk-ota; refusing to touch it")
+    else:
+        tmp_dir = mod_dst.with_name(release + ".tmp-install")
+        r = run(["cp", "-a", str(mod_src), str(tmp_dir)])
+        if r.returncode != 0:
+            return fail_exit(EXIT_ERROR,
+                             f"modules copy failed: {r.stderr.strip()[:200]}")
+        marker = tmp_dir / ".eaidk-ota-installed"
+        marker.write_text("release=%s\\nbundle=%s\\n" % (release, bundle_sha))
+        os.replace(tmp_dir, mod_dst)
+        dirfd = os.open("/lib/modules", os.O_DIRECTORY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    installed[str(mod_dst)] = (sha256_file(mod_src / "modules.dep")
+                               + f" ({sum(1 for _ in mod_dst.rglob('*.ko*'))} modules)")
+
     state.write("STAGED", installed=installed,
-                note=f"installed {release} versioned files to /boot")
+                note=f"installed {release} versioned files to /boot and "
+                     "modules to /lib/modules")
     print("INSTALL=PASS")
     for dst, h in installed.items():
         print(f"  {dst}  {h[:16]}…")
