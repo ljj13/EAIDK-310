@@ -2,7 +2,7 @@
 
 ## Scope of this round
 
-`FAILSAFE_BOOT_BACKEND=BLOCKED`.  This round ships the userspace framework
+`FAILSAFE_BOOT_BACKEND=RAW_REDUNDANT` (production).  This round shipped the userspace framework
 only: verify / stage / plan / health / state machine / authorization gates.
 `try`, `arm`, `commit`, `rollback` and `install-candidate` are implemented
 but refuse to touch the boot chain (see `eaidk-ota try`).
@@ -61,6 +61,8 @@ file consumed by a custom bootcmd.  Requires on-site flashing of the 16 MiB
 prefix + serial supervision.  Nothing in P3.5 prevents it.
 
 ## P3.6 status (supersedes the outlook above)
+
+P4 CLOSED (2026-10-06): 6.18.54-eaidk310-zramfix1 is the verified STABLE default (first remote kernel OTA PASS with true-hang watchdog rollback coverage).  Roles: RESCUE=6.12.108, PREVIOUS_KNOWN_GOOD=6.12.111, STABLE=6.18.54.  P3.6 candidate A (BOOTCOUNT_EXT) remains built as an alternative backend, not installed.  Historical P3.6 text below.
 
 P3.6 candidate A is designed, built and tested; **not flashed**.  The
 backend of choice is U-Boot's `BOOTCOUNT_EXT` driver (NOT `BOOTCOUNT_ENV`
