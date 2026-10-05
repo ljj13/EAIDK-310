@@ -1,0 +1,11 @@
+{
+  "gate": "PASS",
+  "kernel_release": "6.12.111-eaidk310-zramfix1",
+  "source_dir": "/home/Fog/eaidk310-kernel/src/linux-6.12.111",
+  "build_dir": "/home/Fog/eaidk310-kernel/build-zramfix1-6.12.111",
+  "stage_root": "/home/Fog/eaidk310-kernel/stage-zramfix1-6.12.111",
+  "source_date_epoch": 1789995771,
+  "maximum_parallel_jobs": 32,
+  "elapsed_seconds": 969,
+  "installed_module_files": 2788
+}

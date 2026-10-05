@@ -1,0 +1,30 @@
+{
+  "archive": "/home/Fog/eaidk310-kernel/downloads/linux-6.18.54.tar.xz",
+  "archive_sha256": "9df30b02dd8102bbd0be52556288ef6889ddbe7f1ddb96fbf847d0becf3eacac",
+  "baseline_files_verified": 4,
+  "baseline_sha256": {
+    "baseline/config-6.8.4-rk3328": "e442fbdda773af2071ddf3682258bde57464fdbd82cf97c187903391b83d3929",
+    "baseline/extlinux.conf": "faa10a0d571beeba4bf494791dc35732fdf0dc96319cf181f00277456fb4a095",
+    "baseline/rk3328-eaidk-310.decompiled-6.8.4.dts": "c0e5ad8c724bd65ff2c25663e98efa9b4fdabf56c01284684b39788744a625d5",
+    "baseline/rk3328-eaidk-310.dtb": "bb3824bc0d07af301413fc2071f76ad4a196da4807ee79c51a6563a480fca614"
+  },
+  "build_dir": "/home/Fog/eaidk310-kernel/build-zramfix1-6.18.54",
+  "gate": "PASS",
+  "gcc_target": "aarch64-linux-gnu",
+  "kernel_release": "6.18.54-eaidk310-zramfix1",
+  "kernel_version": "6.18.54",
+  "source_dir": "/home/Fog/eaidk310-kernel/src/linux-6.18.54",
+  "tool_versions": {
+    "binutils": "GNU ld (GNU Binutils for Ubuntu) 2.42",
+    "depmod": "kmod version 31",
+    "dtc": "Version: DTC 1.7.0",
+    "file": "file-5.45",
+    "gcc": "13.3.0",
+    "gpg": "gpg (GnuPG) 2.4.4",
+    "make": "GNU Make 4.3",
+    "pahole": "v1.25",
+    "python": "Python 3.12.3",
+    "xz": "xz (XZ Utils) 5.4.5"
+  },
+  "validsig_fingerprint": "647F28654894E3BD457199BE38DBBDC86092693E"
+}
