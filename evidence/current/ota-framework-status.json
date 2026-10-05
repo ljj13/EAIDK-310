@@ -1,0 +1,15 @@
+{
+  "artifact": "ota-framework-status",
+  "date": "2026-10-06",
+  "framework": "PRODUCTION_READY",
+  "failsafe_boot_backend": "RAW_REDUNDANT",
+  "bootloader": "U-Boot 2024.07-rc1 failsafe-raw (patch stack 0001-0004)",
+  "remote_ota_eligible": true,
+  "unattended_remote_ota_eligible": true,
+  "automated_tests": 279,
+  "real_board_validation_classes": 4,
+  "bootstate": {"A_lba": "0x6400", "B_lba": "0x7800", "diag_lba": "0x6C00", "record_bytes": 512, "crc": "CRC32 over bytes 0-507", "selection": "highest valid sequence; equal-seq conflict rejects both", "fail_closed": true},
+  "roles": {"rescue": "6.12.108-eaidk310-zramfix1", "previous_known_good": "6.12.111-eaidk310-zramfix1", "stable": "6.18.54-eaidk310-zramfix1"},
+  "first_remote_ota": {"attempt": "2026-10-01", "result": "offline (installer omitted /lib/modules)", "rollback_proven_on_power_cycle": true},
+  "second_remote_ota": {"result": "PASS", "promoted": "6.18.54-eaidk310-zramfix1", "date": "2026-10-06"}
+}

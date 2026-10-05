@@ -1,20 +1,31 @@
-# Recreate an EAIDK-310 rescue TF
+# Rescue strategy
 
-## Fast recovery from the archived 6.8.4 image
+## Logical rescue kernel (current)
 
-1. Download `debian-bookworm-kernel-6.8.4-eaidk-310-rk3328.img.xz` and `SHA256SUMS` from release `v2026.09.05`.
-2. Verify SHA-256 before opening any disk-writing tool. The expected image digest is `23edecf91e089593e0ad5539163e42be3e354c61ddfe11fec8083167900b3a62`.
-3. Decompress the image or let a trusted imaging tool read the XZ file. The uncompressed image is approximately 2.5 GiB.
-4. Identify the TF by its physical capacity and hardware serial. Disconnect unrelated removable media where practical.
-5. Write the image with Rufus, balenaEtcher or an equivalent raw-image writer. This overwrites the chosen card.
-6. Re-read the written bytes or use the imaging tool's verify option. Do not insert the TF into the board until verification succeeds.
+6.12.108-eaidk310-zramfix1 is the designated **rescue** kernel: it stays
+installed as the last extlinux entry on eMMC and is never removed.  It
+is reached manually (serial boot-menu selection, or after the stable and
+previous-known-good entries both fail) — not by normal OTA rollbacks,
+which target the previous known-good (6.12.111).
 
-The archived image is the original public Debian Bookworm/Linux 6.8.4 baseline. Treat its default credentials as installation defaults: change them before exposing a restored system to an untrusted network, regenerate SSH host keys when appropriate, and install only your own authorized keys.
+A prepared rescue TF card is an independent boot path: U-Boot's
+`boot_targets=mmc1 mmc0 …` scans the SD before eMMC, so a card with a
+bootable prefix boots without touching eMMC.  The card image is not yet
+produced by a fully automated flow — build one by writing the failsafe
+U-Boot prefix (tools in `tools/`) plus a rootfs of your choice, and
+record its SHA-256.  Do not assume an unverified "one-click rescue
+image".
 
-## Restore only the checked boot prefix
+## Bootloader-level failure (on-site only)
 
-`eaidk-310-uboot.img` is exactly 16 MiB and has SHA-256 `6254986c3e1e12d942d35769a8d8182422a017b6ca392237d0f284b31490a3eb`. The repository includes `tools/write-uboot-to-tf.ps1`, which checks disk number, capacity and expected serial and then verifies the bytes it wrote. Use it only when the partition filesystems are already correct and only the loader/U-Boot prefix needs restoration.
+If eMMC cannot boot at all: rescue SD (above), serial console
+(ttyS2 1500000 8N1) or Maskrom USB recovery.  Region map, checklists and
+the recovery matrix: [ota/docs/FLASH-PLAN-P36.md](../ota/docs/FLASH-PLAN-P36.md).
 
-## Add the rebuilt 6.12.108 kernel
+## Historical baseline
 
-After the 6.8.4 image boots, build or download `eaidk310-linux-6.12.108-eaidk310-zramfix1.tar.zst`, verify SHA-256 `e61ba8aa0f095658c6557be4ee108a7a31709b65dba81629c621571907a53cfa`, and follow `kernel/linux-6.12.108-zramfix1/README.md`. Its deployer defaults to dry-run and keeps the 6.8.4 entry available unless an eMMC promotion is explicitly selected.
+The 6.8.4 factory image write-card flow is retired from the current
+rescue model.  The binary remains archived on the
+[v2026.09.05 GitHub Release](https://github.com/ljj13/EAIDK-310/releases/tag/v2026.09.05)
+for provenance; extracted vendor layout facts live in
+[vendor/README.md](../vendor/README.md).

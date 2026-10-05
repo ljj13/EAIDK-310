@@ -1,56 +1,119 @@
-# EAIDK-310 mainline rescue toolkit
+# EAIDK-310 — Mainline Linux & Fail-safe Kernel OTA
 
-This repository contains the reproducible build inputs, recovery manifests and safety-checked tools used to run Debian on the OpenAILab EAIDK-310 (RK3228H/RK3328 family).
+| | |
+| --- | --- |
+| Board | OpenAILab EAIDK-310 · Rockchip RK3328 · 1 GiB · HBD08G 8 GiB eMMC |
+| OS | Debian 13 |
+| **Stable kernel** | **6.18.54-eaidk310-zramfix1** (extlinux default) |
+| Previous known-good | 6.12.111-eaidk310-zramfix1 |
+| Rescue | 6.12.108-eaidk310-zramfix1 |
+| Bootloader | U-Boot 2024.07-rc1 **failsafe-raw** (raw dual-copy bootstate + trial watchdog) |
+| OTA backend | **RAW_REDUNDANT** |
+| Hang recovery | DesignWare hardware watchdog (28.6 s) armed on candidate trials only |
+| Latest release | **v2026.10.06** |
+| Kernel OTA | **PRODUCTION_READY** — remote, unattended |
 
-The current validated kernel is **Linux `6.12.108-eaidk310-zramfix1`**. Its release bundle SHA-256 is:
+Latest binaries: [GitHub Release v2026.10.06](https://github.com/ljj13/EAIDK-310/releases/tag/v2026.10.06)
+
+## OTA flow
 
 ```text
-e61ba8aa0f095658c6557be4ee108a7a31709b65dba81629c621571907a53cfa
+verify bundle (22 checks, manifest-exhaustive)
+  -> stage (atomic, SHA-pinned)
+  -> install Image / uInitrd / DTB        (versioned files in /boot)
+  -> install /lib/modules/<release>       (atomic tree + modules.dep check)
+  -> arm RAW_REDUNDANT                    (bootstate A/B, CRC32, sequence)
+  -> reboot
+  -> trial boot: hardware watchdog armed, bootcount incremented
+  -> health (critical boot + remote/network layers)
+  -> commit  (clear trial, promote extlinux default)
 ```
 
-The repository intentionally separates source from recovery binaries:
+Failure handling:
 
-- Git history contains source locks, configuration, DTS, patches, build scripts, tests and documentation.
-- GitHub Release `v2026.09.05` contains the large checked artifacts needed for immediate recovery.
-- Linux `6.12.108-eaidk310-zramfix1` is source-rebuildable from the locked kernel.org release.
-- Linux `6.8.4-rk3328` is retained as a binary recovery baseline. Its original publisher did not provide a complete source tree proven to reproduce that exact binary.
+```text
+candidate panic / hang / userspace failure
+  -> hardware watchdog reset (or panic reset)
+  -> bootcount exceeds bootlimit
+  -> altbootcmd -> previous known-good via its extlinux entry
+  -> network + Tailscale come back automatically
+```
 
-## Start here
+Rollback state lives in two CRC32-protected 512-byte records on audited
+raw eMMC sectors (LBA 0x6400/0x7800) plus a diagnostic breadcrumb sector
+(LBA 0x6C00) — no dependency on any filesystem or U-Boot environment.
+Every abnormal state fails closed to the stable entry.
 
-- [Build Linux 6.12.108](docs/build-linux.md)
-- [Build U-Boot](docs/build-uboot.md)
-- [Recreate the rescue TF](docs/rescue-tf.md)
-- [Recover or upgrade eMMC](docs/emmc-recovery.md)
-- [Current hardware status](docs/hardware-status.md)
+## Real-board validation
+
+* normal 6.18 stable boot (unarmed, serial-verified, no trial marker)
+* candidate boot path (cmdline trial marker proves sysboot of
+  `extlinux-candidate.conf`)
+* pre-handoff failure fallback (missing kernel image -> same-boot stable)
+* kernel panic rollback (panic + reset -> bootcount exceeds limit ->
+  previous known-good)
+* true no-feed hang -> DesignWare watchdog reset -> raw rollback
+* normal trial NOT killed by the watchdog
+* RAW dual-copy rollback across a 4-day power-off window
+* Tailscale auto recovery after every reboot cycle
+* remote 6.18.54 OTA performed end to end
+* /lib/modules persistent install (the first-attempt incident and fix)
+
+**279 automated tests** (OTA framework, bootstate operators, backend
+routing, U-Boot patch invariants, sandbox state matrices, kernel
+pipeline suites) plus **4 real-board validation classes**.
 
 ## Repository layout
 
 ```text
-kernel/       Linux 6.12.108 configuration, DTS, patches and build pipeline
-bootloader/   pinned U-Boot source identity, EAIDK-310 patch and build pipeline
-rescue/       release-asset manifests and offline verification
-tools/        checked serial, image, U-Boot, eMMC and ST7789 utilities
-evidence/     sanitized machine-readable acceptance records
-docs/         build, recovery and hardware runbooks
+kernel/       per-version pipelines: config, DTS, patches, build/verify
+              scripts, source locks (6.18.54 = current, 6.12.111 =
+              previous known-good, 6.12.108 = rescue reference)
+bootloader/   U-Boot v2024.07-rc1 pipeline: source lock, patches
+              0001-0004 (board DTS, fail-closed bootcount, raw dual-copy
+              bootstate driver, armed-only trial watchdog), audits
+ota/          eaidk-ota (verify/stage/install/arm/health/commit) and
+              eaidk-bootstate (raw bootstate operator)
+hardware/     board hardware notes (ST7789 display experiment)
+tools/        eMMC backup/flash libs, serial capture, U-Boot packaging
+tests/        release/publication gates
+docs/         build, recovery and status documentation
+evidence/     machine-readable acceptance records
+rescue/       rescue asset verification (legacy 6.8.4 baseline is
+              historical, not a current rescue path)
 ```
+
+Historical releases and per-release metadata live on
+[GitHub Releases](https://github.com/ljj13/EAIDK-310/releases)
+(see [docs/releases.md](docs/releases.md)).
+
+## Quick start
+
+* Build the current kernel: [kernel/linux-6.18.54-zramfix1/](kernel/linux-6.18.54-zramfix1/)
+* OTA framework and runbooks: [ota/README.md](ota/README.md)
+* U-Boot failsafe variants and patch stack: [bootloader/u-boot-eaidk310/](bootloader/u-boot-eaidk310/)
+* Recovery models: [docs/emmc-recovery.md](docs/emmc-recovery.md),
+  [docs/rescue-tf.md](docs/rescue-tf.md)
 
 ## Safety boundary
 
-Disk and eMMC tools default to inspection or dry-run where supported. Raw-media writes are destructive. Always verify the exact disk number, hardware serial, capacity, current root device and expected SHA-256 before an apply operation. Never use an EAIDK-310 eMMC as a write target while it is the running root filesystem.
+Unattended **kernel** OTA is enabled.  It never touches the bootloader
+chain.  U-Boot, idbloader, BL31/ATF, the GPT and the raw bootstate
+layout ABI are separate high-risk infrastructure: changing them requires
+an independent review, on-site serial access and a written
+backup/recovery procedure (see ota/docs/FLASH-PLAN-P36.md).
 
-The board's Wi-Fi/Bluetooth module and the external ST7789 panel are still unresolved hardware paths; neither is claimed as working by this repository. Ethernet, SSH, eMMC/TF storage, systemd and 384 MiB LZ4 zram passed both the Linux 6.12.108 rescue-TF run and the final no-TF eMMC boot acceptance. The eMMC boot menu now automatically selects the validated kernel after three seconds.
+## Hardware status (validated on 6.18.54)
 
-## Verification
+Working: eMMC, Ethernet, USB, RTC (via network time), thermal, cpufreq,
+zram (LZ4), nftables, hardware watchdog, SSH/Tailscale.
+Unresolved: onboard Wi-Fi (SDIO power-sequencing experiment did not
+restore it), Bluetooth, ST7789 display panel.
 
-On Ubuntu 24.04 or WSL Ubuntu 24.04:
+## Incident note
 
-```bash
-make test
-make verify
-```
-
-On Windows PowerShell 7, also run the PowerShell contract scripts under `tools/` whose names begin with `test-`. U-Boot parser tests that require the 16 MiB release asset are run only after that asset passes its manifest hash gate.
-
-## Provenance and license
-
-The original 6.8.4 recovery image is from [`yjdwbj/rockchip-eaidk-310` release `v1.0`](https://github.com/yjdwbj/rockchip-eaidk-310/releases/tag/v1.0). Linux and U-Boot remain governed by their upstream licenses. Original code and documentation in this repository are provided under GPL-2.0-only; retained upstream files keep their existing notices.
+The first remote 6.18 OTA attempt went offline because the OTA installer
+omitted `/lib/modules/<release>`.  The Linux 6.18 kernel, DTB and
+initramfs were **not** the cause; `install-candidate` now installs the
+module tree atomically as part of every OTA.  Full evidence: the
+`release-evidence` asset of release v2026.10.06.
