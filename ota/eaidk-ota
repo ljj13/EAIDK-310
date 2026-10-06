@@ -926,17 +926,22 @@ esac
 
 while :; do
   sleep 10
-  upg=$("${EAIDK_TEST_BOOTSTATE:-/usr/local/sbin/eaidk-bootstate}" inspect --backend raw \
-        --raw-device /dev/mmcblk2 --json 2>/dev/null | \
+  # Ask the OTA state machine (not the raw record reader -- its CLI takes a
+  # record file, not a device).  Probe failure => KEEP FEEDING: a hung board
+  # must reset via the fd we hold, a healthy trial must never be reset by a
+  # transient probe error.
+  upg=$("${EAIDK_TEST_OTA_STATUS:-/usr/local/sbin/eaidk-ota}" --json status 2>/dev/null | \
         python3 -c 'import json,sys
-print(json.load(sys.stdin).get("upgrade_available"))' 2>/dev/null)
-  if [ "$upg" != "1" ]; then
-    # trial over: magic 'V' then close -- the ONLY clean stop for a
-    # U-Boot-started watchdog.
+try: print(json.load(sys.stdin).get("bootstate", {}).get("upgrade_available"))
+except Exception: print("ERR")' 2>/dev/null)
+  if [ "$upg" = "0" ]; then
+    # trial committed/cleared: magic 'V' then close -- the ONLY clean stop
+    # for a U-Boot-started watchdog.
     printf 'V' >&3
     echo "eaidk-trial-feed: trial no longer armed; watchdog released (magic V)"
     exit 0
   fi
+  # upgrade_available=1 (or probe error): keep feeding.
   printf 'x' >&3 || exit 1
 done
 '''
@@ -1035,14 +1040,21 @@ def readback_validate_candidate_conf(conf: pathlib.Path, release: str,
 
 
 def install_candidate_conf(boot_dir: pathlib.Path, release: str,
-                           bundle_sha: str, dtb_name: str) -> dict:
+                           bundle_sha: str, dtb_name: str,
+                           hang_test: bool = False) -> dict:
     """Generate /boot/extlinux/extlinux-candidate.conf atomically from the
-    running stable command line plus the trial marker, then read it back."""
+    running stable command line plus the trial marker, then read it back.
+    hang_test injects eaidk_ota_hang_test=1 (P3.7 TEST C semantics: the
+    feeder feeds once and then deliberately stops; the WDT resets the SoC).
+    Opt-in and audit-visible via the conf digest."""
     stable = current_default_entry(boot_dir)
     if not stable["append"]:
         raise ValueError("stable extlinux default entry has no APPEND line")
     marker = candidate_trial_marker(release, bundle_sha)
-    conf_text = render_candidate_conf(stable["append"], release, marker, dtb_name)
+    stable_append = stable["append"]
+    if hang_test:
+        stable_append += " eaidk_ota_hang_test=1"
+    conf_text = render_candidate_conf(stable_append, release, marker, dtb_name)
     conf = boot_dir / CANDIDATE_CONF
     atomic_write_text(conf, conf_text)
     parsed = readback_validate_candidate_conf(conf, release, marker, dtb_name)
@@ -1405,7 +1417,8 @@ def cmd_install_candidate(args) -> int:
     # marker, written atomically, and read back before success is declared.
     try:
         candidate_identity = install_candidate_conf(
-            boot, release, bundle_sha, dtb_src.name)
+            boot, release, bundle_sha, dtb_src.name,
+            hang_test=bool(getattr(args, "inject_hang_test", False)))
     except (ValueError, OSError) as exc:
         return fail_exit(EXIT_ERROR,
                          f"candidate conf generation failed: {exc}")
@@ -1462,6 +1475,11 @@ def cmd_install_trial_feed(args) -> int:
     print(f"  {bin_path}")
     print(f"  {unit_path} (enabled; runs only on eaidk_ota_trial= boots)")
     return EXIT_OK
+
+
+def cmd_install_candidate_hang_test(args) -> int:
+    args.inject_hang_test = True
+    return cmd_install_candidate(args)
 
 
 def cmd_try(args) -> int:
@@ -1699,6 +1717,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("release")
 
     sub.add_parser("install-candidate", help="install staged candidate (locked: local auth)")
+    sub.add_parser("install-candidate-hang-test",
+                   help="install staged candidate with eaidk_ota_hang_test=1 "
+                        "(P3.7 TEST C true-hang injection; audit-visible)")
     sub.add_parser("install-trial-feed",
                    help="install/enable the trial watchdog feeder (root; persistent infra)")
     health = sub.add_parser("health", help="run CRITICAL + REMOTE health checks")
@@ -1722,6 +1743,7 @@ def main(argv=None) -> int:
     args.run_dir = pathlib.Path(args.run_dir)
     args.config_dir = pathlib.Path(args.config_dir)
     handlers = {
+    "install-candidate-hang-test": cmd_install_candidate_hang_test,
     "install-trial-feed": cmd_install_trial_feed,
         "inspect": cmd_inspect, "verify": cmd_verify, "stage": cmd_stage,
         "status": cmd_status, "history": cmd_history,

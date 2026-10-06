@@ -52,16 +52,21 @@ esac
 
 while :; do
   sleep 10
-  upg=$("${EAIDK_TEST_BOOTSTATE:-/usr/local/sbin/eaidk-bootstate}" inspect --backend raw \
-        --raw-device /dev/mmcblk2 --json 2>/dev/null | \
+  # Ask the OTA state machine (not the raw record reader -- its CLI takes a
+  # record file, not a device).  Probe failure => KEEP FEEDING: a hung board
+  # must reset via the fd we hold, a healthy trial must never be reset by a
+  # transient probe error.
+  upg=$("${EAIDK_TEST_OTA_STATUS:-/usr/local/sbin/eaidk-ota}" --json status 2>/dev/null | \
         python3 -c 'import json,sys
-print(json.load(sys.stdin).get("upgrade_available"))' 2>/dev/null)
-  if [ "$upg" != "1" ]; then
-    # trial over: magic 'V' then close -- the ONLY clean stop for a
-    # U-Boot-started watchdog.
+try: print(json.load(sys.stdin).get("bootstate", {}).get("upgrade_available"))
+except Exception: print("ERR")' 2>/dev/null)
+  if [ "$upg" = "0" ]; then
+    # trial committed/cleared: magic 'V' then close -- the ONLY clean stop
+    # for a U-Boot-started watchdog.
     printf 'V' >&3
     echo "eaidk-trial-feed: trial no longer armed; watchdog released (magic V)"
     exit 0
   fi
+  # upgrade_available=1 (or probe error): keep feeding.
   printf 'x' >&3 || exit 1
 done

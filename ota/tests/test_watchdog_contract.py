@@ -135,6 +135,11 @@ class WatchdogHandoffTests(unittest.TestCase):
             "stub.parent.mkdir(parents=True, exist_ok=True)\n"
             "stub.write_text('#!/bin/sh\\necho \\'{\"upgrade_available\": 0}\\'\\n')\n"
             "stub.chmod(0o755)\n"
+            "ota_stub = work / 'stub' / 'eaidk-ota'\n"
+            "ota_stub.write_text('#!/bin/sh\\necho \\'{\"active_backend\": "
+            "\"RawBootstateBackend\", \"bootstate\": "
+            "{\"upgrade_available\": 0}}\\'\\n')\n"
+            "ota_stub.chmod(0o755)\n"
             "print('FIXTURE_OK')\n")
         return self.wsl_python(script)
 
@@ -222,6 +227,7 @@ class WatchdogHandoffTests(unittest.TestCase):
                  f"extlinux-candidate.conf' "
                  f"EAIDK_TEST_WATCHDOG='{work}/wd/watchdog0' "
                  f"EAIDK_TEST_BOOTSTATE='{work}/stub/eaidk-bootstate' "
+                 f"EAIDK_TEST_OTA_STATUS='{work}/stub/eaidk-ota' "
                  f"sh {self.wsl_feeder}; echo RC=$?; "
                  f"grep -c V '{work}/wd/watchdog0'")
         r = self.wsl_bash(inner)
