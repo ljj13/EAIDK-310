@@ -962,7 +962,10 @@ Restart=no
 WantedBy=multi-user.target
 '''
 TRIAL_FEED_BIN = "/usr/local/sbin/eaidk-trial-feed"
-TRIAL_FEED_UNIT_PATH = "/etc/systemd/system/eaidk-trial-feed.service"
+# The production unit name is the P3.7 deployment's (eaidk-ota-trial-feed);
+# install-trial-feed writes OUR unit only when no unit already references
+# the feeder binary, so an operator-managed unit is never clobbered.
+TRIAL_FEED_UNIT_PATH = "/etc/systemd/system/eaidk-ota-trial-feed.service"
 
 CANDIDATE_CONF = "extlinux/extlinux-candidate.conf"
 
@@ -1464,13 +1467,20 @@ def cmd_install_trial_feed(args) -> int:
     unit_path = pathlib.Path(TRIAL_FEED_UNIT_PATH)
     atomic_write_text(bin_path, TRIAL_FEED_SCRIPT)
     os.chmod(bin_path, 0o755)
-    unit_dir = unit_path.parent
-    unit_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(unit_path, TRIAL_FEED_UNIT)
-    run(["systemctl", "daemon-reload"])
-    r_enable = run(["systemctl", "is-enabled", "eaidk-trial-feed.service"])
+    if unit_path.is_file():
+        existing = unit_path.read_text(encoding="utf-8")
+        if TRIAL_FEED_BIN not in existing:
+            return fail_exit(EXIT_CONFLICT,
+                             f"{unit_path} exists but does not run "
+                             f"{TRIAL_FEED_BIN}; not clobbering it")
+        print(f"unit already present and references {TRIAL_FEED_BIN}; kept")
+    else:
+        unit_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(unit_path, TRIAL_FEED_UNIT)
+        run(["systemctl", "daemon-reload"])
+    r_enable = run(["systemctl", "is-enabled", unit_path.name])
     if "enabled" not in (r_enable.stdout or ""):
-        run(["systemctl", "enable", "eaidk-trial-feed.service"])
+        run(["systemctl", "enable", unit_path.name])
     print("TRIAL_FEED_INSTALL=PASS")
     print(f"  {bin_path}")
     print(f"  {unit_path} (enabled; runs only on eaidk_ota_trial= boots)")
