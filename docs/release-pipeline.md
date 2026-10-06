@@ -102,3 +102,39 @@ checks passed, artifacts hashed and manifested.  It does NOT mean stable:
 board installation runs through `eaidk-ota verify/stage/install/arm` with the
 watchdog trial, and promotion to stable plus any GitHub Release publishing
 remain explicit human steps.
+
+## P7 graduation record (2026-10-06, engine @ f72ddfd+)
+
+All runs on WSL2 Ubuntu 24.04 (ext4, 32 jobs, gcc 13.3.0), clean clone of
+this repository, `release-kernel.py` only — no legacy build tree:
+
+| Test | Result |
+|---|---|
+| Clean-clone, empty-cache build of 6.18.54 | READY_FOR_BOARD_TRIAL |
+| Cold-cache bundle sha256 | `3662a627db4829dbdfc9fb6a9e04b3939bcde3724b371856bcd74bab670c25ac` |
+| Warm-cache rebuild of 6.18.54 | byte-identical, engine `REPRO_COMPARE … MATCH=YES` |
+| 6.12.111 full build in the same work root | READY_FOR_BOARD_TRIAL (`31f9068b…`) |
+| Isolation A→B (6.18.54 outputs after the 6.12.111 build) | 7/7 output hashes unchanged |
+| Isolation B→A (6.12.111 outputs after the warm 6.18.54 rebuild) | 7/7 output hashes unchanged |
+| Kernel-side reproducibility vs the official v2026.10.06 bundle | Image, DTB, all 450 modules, manifest metadata: byte-identical |
+| uInitrd reproducibility | byte-identical after ownership normalization (see below) |
+| Bundle SHA vs official `98909372…505f06` | exact match once the single documented delta below is substituted |
+
+Nondeterminism ledger:
+
+1. `deploy/kernel_artifacts.py` in the OFFICIAL v2026.10.06 tarball is a
+   CRLF working-tree copy (packaged before `.gitattributes` enforced LF).
+   Substituting that one file (and its manifest entry) into the rebuilt
+   bundle and repacking with identical tar parameters reproduces the
+   official SHA256 **exactly** (`989093725bdec974…505f06`).  New bundles
+   ship LF, as the repository intends.
+2. initramfs cpio preserves the uid/gid of the module files: the reference
+   build ran kernel compilation as the unprivileged build user (uid 1000,
+   `Fog`) and only chroot steps as root.  The engine normalizes module
+   staging ownership to that reference identity so rebuilt uInitrd images
+   stay byte-comparable.
+3. Cross-host variance (documented, not exercised here): gcc/binutils
+   versions change Image bytes (the engine hard-fails on drift against the
+   committed `analysis/verify-inputs.json` record); trixie package drift
+   changes the initramfs; `zstd -T0` worker count can change compressed
+   bytes across hosts.  Same-host cold/warm builds are unaffected.
