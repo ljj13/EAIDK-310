@@ -734,6 +734,7 @@ def cmd_stage(args) -> int:
     if not archive.exists():
         return fail_exit(EXIT_ERROR, f"bundle not found: {archive}")
     with state.locked():
+        data = state.read()
         try:
             report = verify_bundle(archive)
         except (VerifyError, ValueError) as exc:
@@ -745,7 +746,8 @@ def cmd_stage(args) -> int:
         if staging.exists():
             if marker.exists() and marker.read_text().strip() == report["bundle_sha256"]:
                 state.write("STAGED", release=release,
-                            bundle_sha256=report["bundle_sha256"])
+                            bundle_sha256=report["bundle_sha256"],
+                            candidate_identity=data.get("candidate_identity"))
                 print(f"STAGE=PASS (already staged, idempotent) release={release}")
                 return EXIT_OK
             return fail_exit(EXIT_CONFLICT,
@@ -859,6 +861,222 @@ def current_default_entry(boot_dir: pathlib.Path) -> dict:
               if ln.strip().startswith("label ")]
     return {"conf": str(conf), "text": text, "default": default,
             "append": append, "labels": labels}
+
+
+# --------------------------------------------------------------------------
+# P8.1 candidate trial contract: the candidate extlinux entry is part of
+# the installation (never an operator step), and arming refuses unless the
+# whole candidate deployment is provably consistent.
+# --------------------------------------------------------------------------
+
+TRIAL_MARKER_PREFIX = "eaidk_ota_trial="
+CANDIDATE_CONF = "extlinux/extlinux-candidate.conf"
+
+
+def candidate_trial_marker(release: str, bundle_sha: str) -> str:
+    return f"{TRIAL_MARKER_PREFIX}{release}@{bundle_sha[:12]}"
+
+
+def render_candidate_conf(stable_append: str, release: str, marker: str,
+                          dtb_name: str) -> str:
+    """Candidate trial entry: versioned kernel assets, the RUNNING board's
+    kernel command line (taken from the stable default entry -- the bundle's
+    build-time APPEND has carried a stale root UUID before), and the trial
+    identity marker."""
+    label = f"rockchip-kernel-{release}-test"
+    return (
+        f"default {label}\n"
+        "timeout 5\n"
+        f"menu title EAIDK-310 candidate trial ({release})\n"
+        "\n"
+        f"label {label}\n"
+        f"    LINUX  /Image-{release}\n"
+        f"    FDT    /dtb/rockchip/{dtb_name}\n"
+        f"    INITRD /uInitrd-{release}\n"
+        f"    APPEND {stable_append} {marker}\n"
+    )
+
+
+def _fsync_dir(path: pathlib.Path) -> None:
+    dirfd = os.open(str(path), os.O_DIRECTORY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+
+
+def atomic_write_text(path: pathlib.Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp-write")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    _fsync_dir(path.parent)
+
+
+def readback_validate_candidate_conf(conf: pathlib.Path, release: str,
+                                     marker: str, dtb_name: str) -> dict:
+    """Parse the written conf and prove it references exactly the installed
+    candidate assets; raises ValueError on any mismatch."""
+    text = conf.read_text(encoding="utf-8")
+    label = f"rockchip-kernel-{release}-test"
+    default = next((ln.split(None, 1)[1].strip() for ln in text.splitlines()
+                    if ln.startswith("default ")), None)
+    if default != label:
+        raise ValueError(f"conf default is {default!r}, expected {label!r}")
+    linux = next((ln.split(None, 1)[1].strip() for ln in text.splitlines()
+                  if ln.strip().startswith("LINUX ")), None)
+    if linux != f"/Image-{release}":
+        raise ValueError(f"conf LINUX is {linux!r}, expected /Image-{release}")
+    initrd = next((ln.split(None, 1)[1].strip() for ln in text.splitlines()
+                   if ln.strip().startswith("INITRD ")), None)
+    if initrd != f"/uInitrd-{release}":
+        raise ValueError(f"conf INITRD is {initrd!r}, expected /uInitrd-{release}")
+    fdt = next((ln.split(None, 1)[1].strip() for ln in text.splitlines()
+                if ln.strip().startswith("FDT ")), None)
+    if fdt != f"/dtb/rockchip/{dtb_name}":
+        raise ValueError(f"conf FDT is {fdt!r}, expected /dtb/rockchip/{dtb_name}")
+    append = next((ln.split(None, 1)[1].strip() for ln in text.splitlines()
+                   if ln.strip().startswith("APPEND ")), None)
+    if not append or marker not in append.split():
+        raise ValueError(f"conf APPEND lacks trial marker {marker!r}")
+    return {"label": label, "linux": linux, "fdt": fdt, "initrd": initrd,
+            "append": append, "marker": marker}
+
+
+def install_candidate_conf(boot_dir: pathlib.Path, release: str,
+                           bundle_sha: str, dtb_name: str) -> dict:
+    """Generate /boot/extlinux/extlinux-candidate.conf atomically from the
+    running stable command line plus the trial marker, then read it back."""
+    stable = current_default_entry(boot_dir)
+    if not stable["append"]:
+        raise ValueError("stable extlinux default entry has no APPEND line")
+    marker = candidate_trial_marker(release, bundle_sha)
+    conf_text = render_candidate_conf(stable["append"], release, marker, dtb_name)
+    conf = boot_dir / CANDIDATE_CONF
+    atomic_write_text(conf, conf_text)
+    parsed = readback_validate_candidate_conf(conf, release, marker, dtb_name)
+    return {
+        "release": release,
+        "bundle_sha256": bundle_sha,
+        "backend": FAILSAFE_BOOT_BACKEND,
+        "marker": marker,
+        "conf": str(conf),
+        "conf_sha256": sha256_file(conf),
+        "stable_default": stable["default"],
+        "parsed": parsed,
+    }
+
+
+def prearm_contract(boot_dir: pathlib.Path, state_dir: pathlib.Path,
+                    release: str, bundle_sha: str, backend_name: str,
+                    raw_state: dict | None,
+                    modules_root: str = "/lib/modules") -> list[tuple[str, bool, str]]:
+    """ARM_ALLOWED checklist (P8.1).  Pure reads: never mutates anything.
+    Any False refuses the arm before the raw bootstate is touched."""
+    boot = pathlib.Path(boot_dir)
+    staging = pathlib.Path(state_dir) / STAGING_NAME / release
+    state_file = pathlib.Path(state_dir) / STATE_FILE
+    state = json.loads(state_file.read_text(encoding="utf-8")) \
+        if state_file.exists() else {}
+    identity = state.get("candidate_identity") or {}
+    checks: list[tuple[str, bool, str]] = []
+
+    def add(name: str, ok: bool, detail: str = "") -> None:
+        checks.append((name, bool(ok), detail))
+
+    marker = candidate_trial_marker(release, bundle_sha)
+    conf = boot / CANDIDATE_CONF
+
+    add("candidate_conf_present", conf.is_file())
+    conf_text = conf.read_text(encoding="utf-8", errors="replace") \
+        if conf.is_file() else ""
+    dtb_name = (identity.get("parsed", {}).get("fdt") or "").rsplit("/", 1)[-1]
+    parsed: dict = {}
+    try:
+        parsed = readback_validate_candidate_conf(conf, release, marker, dtb_name)
+        add("candidate_conf_parseable", True)
+    except (ValueError, OSError) as exc:
+        add("candidate_conf_parseable", False, str(exc)[:160])
+    add("candidate_conf_identity_matches_plan",
+        bool(identity) and identity.get("marker") == marker
+        and identity.get("conf_sha256") == (sha256_file(conf) if conf.is_file() else ""),
+        f"state marker={identity.get('marker', 'none')}")
+    add("candidate_conf_refs_expected_image",
+        f"/Image-{release}" in conf_text)
+    add("candidate_conf_refs_expected_uinitrd",
+        f"/uInitrd-{release}" in conf_text)
+    dtb_line = next((ln.split(None, 1)[1].strip() for ln in conf_text.splitlines()
+                     if ln.strip().startswith("FDT ")), "")
+    dtb_rel = dtb_line
+    dtb_on_boot = boot / dtb_rel.lstrip("/") if dtb_rel else None
+    add("candidate_conf_refs_expected_dtb",
+        bool(dtb_rel) and dtb_on_boot is not None and dtb_on_boot.is_file(), dtb_rel)
+
+    staged_image = staging / "boot" / f"Image-{release}"
+    staged_uinitrd = staging / "boot" / f"uInitrd-{release}"
+    staged_dtb_dir = staging / "boot" / "dtb" / "rockchip"
+    staged_dtb = next(iter(sorted(staged_dtb_dir.glob("*.dtb"))), None) \
+        if staged_dtb_dir.is_dir() else None
+    boot_image = boot / f"Image-{release}"
+    boot_uinitrd = boot / f"uInitrd-{release}"
+    add("image_hash_matches_plan",
+        staged_image.is_file() and boot_image.is_file()
+        and sha256_file(boot_image) == sha256_file(staged_image))
+    add("uinitrd_hash_matches_plan",
+        staged_uinitrd.is_file() and boot_uinitrd.is_file()
+        and sha256_file(boot_uinitrd) == sha256_file(staged_uinitrd))
+    add("dtb_hash_matches_plan",
+        staged_dtb is not None and dtb_on_boot is not None and dtb_on_boot.is_file()
+        and sha256_file(dtb_on_boot) == sha256_file(staged_dtb))
+
+    mod_dst = pathlib.Path(modules_root) / release
+    add("module_tree_present", mod_dst.is_dir())
+    add("modules_dep_present", (mod_dst / "modules.dep").is_file())
+    mod_marker = mod_dst / ".eaidk-ota-installed"
+    mod_marker_ok = False
+    if mod_marker.is_file():
+        body = mod_marker.read_text(encoding="utf-8", errors="replace")
+        mod_marker_ok = (f"release={release}" in body
+                         and (not bundle_sha or bundle_sha in body))
+    add("module_release_matches_candidate", mod_dst.is_dir() and mod_marker_ok)
+    add("install_marker_matches_candidate", mod_marker_ok)
+
+    add("trial_marker_present_in_append",
+        marker in (parsed.get("append") or conf_text))
+    stable = None
+    try:
+        stable = current_default_entry(boot)
+    except OSError:
+        pass
+    root_of = lambda s: next(
+        (tok for tok in (s or "").split() if tok.startswith("root=")), "")
+    add("append_root_matches_stable",
+        bool(stable and stable["append"])
+        and root_of(parsed.get("append")) == root_of(stable["append"]),
+        root_of(parsed.get("append")))
+    add("rollback_target_is_current_stable",
+        bool(stable and stable["default"]
+             and stable["default"] != f"rockchip-kernel-{release}-test"
+             and stable["default"] in stable["labels"]),
+        f"default={stable.get('default') if stable else 'unreadable'}")
+
+    backend_marker = boot / "eaidk-ota" / "BACKEND"
+    add("backend_identity_pass",
+        backend_marker.is_file()
+        and backend_marker.read_text(encoding="utf-8").strip().split()[:1] == [backend_name])
+    safe = False
+    if isinstance(raw_state, dict):
+        reason = str(raw_state.get("reason", ""))
+        if raw_state.get("fail_closed") and "does not exist" not in reason:
+            safe = False
+        elif raw_state.get("upgrade_available"):
+            safe = identity.get("release") == release
+        else:
+            safe = True
+    add("raw_state_currently_safe", safe, json.dumps(raw_state or {})[:80])
+    return checks
 
 
 def cmd_plan_install(args) -> int:
@@ -1047,9 +1265,21 @@ def cmd_install_candidate(args) -> int:
     installed[str(mod_dst)] = (sha256_file(mod_src / "modules.dep")
                                + f" ({sum(1 for _ in mod_dst.rglob('*.ko*'))} modules)")
 
+    # P8.1: the candidate extlinux entry is part of the installation.  It is
+    # generated from the running stable command line plus the trial identity
+    # marker, written atomically, and read back before success is declared.
+    try:
+        candidate_identity = install_candidate_conf(
+            boot, release, bundle_sha, dtb_src.name)
+    except (ValueError, OSError) as exc:
+        return fail_exit(EXIT_ERROR,
+                         f"candidate conf generation failed: {exc}")
+    installed[candidate_identity["conf"]] = candidate_identity["conf_sha256"]
+
     state.write("STAGED", installed=installed,
-                note=f"installed {release} versioned files to /boot and "
-                     "modules to /lib/modules")
+                candidate_identity=candidate_identity,
+                note=f"installed {release} versioned files to /boot, "
+                     "modules to /lib/modules and the candidate trial entry")
     print("INSTALL=PASS")
     for dst, h in installed.items():
         print(f"  {dst}  {h[:16]}…")
@@ -1086,6 +1316,23 @@ def cmd_try(args) -> int:
         return fail_exit(EXIT_CONFLICT,
                          f"arm requires a staged candidate "
                          f"(current: {data.get('state')})")
+    release = data.get("release")
+    bundle_sha = data.get("bundle_sha256") or ""
+    raw_state = backend.inspect() if hasattr(backend, "inspect") else None
+    checks = prearm_contract(pathlib.Path(args.boot_dir),
+                             pathlib.Path(args.state_dir),
+                             release, bundle_sha, backend.name, raw_state,
+                             modules_root=getattr(args, "modules_dir", "/lib/modules"))
+    failed = [c for c in checks if not c[1]]
+    if failed:
+        print("ARM_REFUSED (raw bootstate untouched):")
+        for name, _, detail in failed:
+            print(f"  FAIL  {name}" + (f"  [{detail}]" if detail else ""))
+        passed = [name for name, ok, _ in checks if ok]
+        print(f"  {len(passed)}/{len(checks)} contract checks passed")
+        return fail_exit(EXIT_AUTH, "pre-arm candidate contract failed")
+    for name, _, _ in checks:
+        print(f"  PASS  {name}")
     if data.get("state") == "ARMED":
         bootstate = backend.inspect()
         print(f"already armed via {backend.name}; bootstate unchanged "
@@ -1098,6 +1345,7 @@ def cmd_try(args) -> int:
         return fail_exit(EXIT_ERROR, str(exc))
     state.write("ARMED", release=data.get("release"),
                 bundle_sha256=data.get("bundle_sha256"),
+                candidate_identity=data.get("candidate_identity"),
                 backend=backend.name, bootstate=bootstate)
     print(f"candidate armed via {backend.name}: {backend.state_path()}")
     print("reboot now: U-Boot runs one candidate trial (bootlimit=1); "
@@ -1254,6 +1502,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--state-dir", default=os.environ.get("EAIDK_OTA_STATE", DEFAULT_STATE_DIR))
     p.add_argument("--boot-dir", default=os.environ.get("EAIDK_OTA_BOOT", DEFAULT_BOOT_DIR))
+    p.add_argument("--modules-dir", default=os.environ.get("EAIDK_OTA_MODULES", "/lib/modules"))
     p.add_argument("--config-dir", default=DEFAULT_CONFIG_DIR)
     p.add_argument("--run-dir", default=DEFAULT_RUN_DIR)
     p.add_argument("--backend", choices=("auto", "none", "bootcount-fs", "raw"),
