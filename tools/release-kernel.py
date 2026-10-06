@@ -769,6 +769,9 @@ class Engine:
         out_dir = self.output_root / self.meta["kernel_version"]
         out_dir.mkdir(parents=True, exist_ok=True)
         archive = out_dir / f"{bundle_name}.tar.zst"
+        for stale in (archive, Path(str(archive) + ".sha256")):
+            if stale.exists():
+                stale.unlink()
         tar_epoch = self.meta["initramfs_source_date_epoch"]
         tar_cmd = f"tar --sort=name --mtime=@{tar_epoch} --owner=0 --group=0 --numeric-owner " \
                   f"-C {p['bundle']} -cf - {bundle_name} | zstd -19 -T0 -q -o {archive}"
