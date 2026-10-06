@@ -72,6 +72,8 @@ kernel/       per-version pipelines: config, DTS, patches, build/verify
 bootloader/   U-Boot v2024.07-rc1 pipeline: source lock, patches
               0001-0004 (board DTS, fail-closed bootcount, raw dual-copy
               bootstate driver, armed-only trial watchdog), audits
+custom-src/   human-readable mirror of the project-owned C/DTS sources
+              (byte-exact vs the patch stack; see below)
 ota/          eaidk-ota (verify/stage/install/arm/health/commit) and
               eaidk-bootstate (raw bootstate operator)
 hardware/     board hardware notes (ST7789 display experiment)
@@ -86,6 +88,28 @@ rescue/       rescue asset verification (legacy 6.8.4 baseline is
 Historical releases and per-release metadata live on
 [GitHub Releases](https://github.com/ljj13/EAIDK-310/releases)
 (see [docs/releases.md](docs/releases.md)).
+
+## Custom board source
+
+This repository deliberately does **not** vendor the full upstream
+Linux/U-Boot source.  Upstream trees are pinned by `source-lock.json`
+and applied as a patch stack; this keeps upstream code separate from
+EAIDK-310-specific work while making the board-specific implementation
+directly reviewable in [`custom-src/`](custom-src/README.md):
+
+* U-Boot raw dual-copy bootstate driver:
+  [`bootcount_eaidk310_raw.c`](custom-src/u-boot/drivers/bootcount/bootcount_eaidk310_raw.c)
+* U-Boot EAIDK-310 board DTS/defconfigs: [`custom-src/u-boot/`](custom-src/u-boot/)
+* Linux board device tree:
+  [`rk3328-eaidk-310.dts`](custom-src/linux/arch/arm64/boot/dts/rockchip/rk3328-eaidk-310.dts)
+
+Every mirrored file is byte-identical to the content produced by applying
+the production patch stack to the pinned upstream commit;
+`tools/verify_custom_source.py --check` (part of `make verify`) enforces
+this, and [docs/CUSTOM-SOURCE-INVENTORY.md](docs/CUSTOM-SOURCE-INVENTORY.md)
+classifies every file the patches touch.  Files this project only modifies
+upstream (Kconfig, Makefiles, watchdog glue) stay patch-only and are listed
+in the inventory.
 
 ## Quick start
 
