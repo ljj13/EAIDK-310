@@ -56,6 +56,7 @@ class BackendFixtureTests(unittest.TestCase):
         self.bootstate = f"{self.boot}/eaidk-ota/bootcount.bin"
         self.tool_args = (f"--state-dir {self.work}/state --boot-dir {self.boot} "
                           f"--config-dir {self.work}/config --run-dir {self.work}/run "
+                          f"--modules-dir {self.work}/modules "
                           f"--bootstate-tool {self.wsl_tool}")
 
     def run_tool(self, args: str, backend: str = "bootcount-fs", json_mode: bool = False):
@@ -68,14 +69,73 @@ class BackendFixtureTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def craft_state(self, state: str):
-        payload = {"state": state, "updated": "2026-10-01T00:00:00+00:00",
-                   "release": "6.18.54-eaidk310-zramfix1",
-                   "bundle_sha256": "989093725bdec974ebda8a031dcb083bcc7802ba"
-                                    "51ae7c24a143557834505f06"}
-        r = self.wsl(
-            f"cat > {self.work}/state/state.json <<'EOF'\n"
-            + json.dumps(payload, indent=2) + "\nEOF")
-        self.assertEqual(r.returncode, 0, r.stderr)
+        # P8.1: the pre-arm contract requires a complete, consistent candidate
+        # deployment (conf + versioned assets + modules + identity), so the
+        # fixture builds that world for every crafted state.
+        script = (
+            "import hashlib, json, pathlib, shutil\n"
+            f"work = pathlib.Path({self.work!r})\n"
+            "release = '6.18.54-eaidk310-zramfix1'\n"
+            "bundle = '989093725bdec974ebda8a031dcb083bcc7802ba"
+            "51ae7c24a143557834505f06'\n"
+            "boot = work / 'boot'\n"
+            "staging = work / 'state' / 'staging' / release\n"
+            "mods = work / 'modules' / release\n"
+            "for d in (boot / 'extlinux', boot / 'dtb/rockchip',\n"
+            "          staging / 'boot' / 'dtb/rockchip',\n"
+            "          staging / 'root/lib/modules' / release,\n"
+            "          mods / 'kernel', boot / 'eaidk-ota'):\n"
+            "    d.mkdir(parents=True, exist_ok=True)\n"
+            "def blob(p):\n"
+            "    p.write_bytes(release.encode() + bytes(4096))\n"
+            "img = boot / ('Image-' + release)\n"
+            "uin = boot / ('uInitrd-' + release)\n"
+            "dtb = boot / 'dtb/rockchip' / ('rk3328-eaidk-310-' + release + '.dtb')\n"
+            "for f in (img, uin, dtb):\n"
+            "    blob(f)\n"
+            "shutil.copy(img, staging / 'boot' / img.name)\n"
+            "shutil.copy(uin, staging / 'boot' / uin.name)\n"
+            "shutil.copy(dtb, staging / 'boot/dtb/rockchip' / dtb.name)\n"
+            "(mods / 'modules.dep').write_text('kernel/board_test.ko: \\n')\n"
+            "(mods / '.eaidk-ota-installed').write_text("
+            "'release=' + release + '\\nbundle=' + bundle + '\\n')\n"
+            "(mods / 'kernel' / 'board_test.ko').write_bytes(b'fake')\n"
+            "shutil.copy(mods / 'modules.dep', "
+            "staging / 'root/lib/modules' / release / 'modules.dep')\n"
+            "marker = 'eaidk_ota_trial=' + release + '@' + bundle[:12]\n"
+            "append = 'root=UUID=781e1dc3-166b-46e9-8578-4b9c003d7305 ' + marker\n"
+            "label = 'rockchip-kernel-' + release + '-test'\n"
+            "(boot / 'extlinux' / 'extlinux.conf').write_text("
+            "'default rockchip-kernel-' + release + '\\n' + "
+            "'label rockchip-kernel-' + release + '\\n' + "
+            "'    APPEND root=UUID=781e1dc3-166b-46e9-8578-4b9c003d7305\\n')\n"
+            "(boot / 'extlinux' / 'extlinux-candidate.conf').write_text("
+            "'default ' + label + '\\n' + 'label ' + label + '\\n' + "
+            "'    LINUX  /Image-' + release + '\\n' + "
+            "'    FDT    /dtb/rockchip/rk3328-eaidk-310-' + release + '.dtb\\n' + "
+            "'    INITRD /uInitrd-' + release + '\\n' + "
+            "'    APPEND ' + append + '\\n')\n"
+            "identity = {'release': release, 'bundle_sha256': bundle,\n"
+            "            'backend': 'RAW_REDUNDANT', 'marker': marker,\n"
+            "            'conf': str(boot / 'extlinux/extlinux-candidate.conf'),\n"
+            "            'conf_sha256': hashlib.sha256((boot / "
+            "'extlinux/extlinux-candidate.conf').read_bytes()).hexdigest(),\n"
+            "            'stable_default': 'rockchip-kernel-' + release,\n"
+            "            'parsed': {'label': label, 'linux': '/Image-' + release,\n"
+            "                       'fdt': '/dtb/rockchip/rk3328-eaidk-310-' + release"
+            " + '.dtb',\n"
+            "                       'initrd': '/uInitrd-' + release,\n"
+            "                       'append': append, 'marker': marker}}\n"
+            "payload = {'state': " + json.dumps(state) + ",\n"
+            "           'updated': '2026-10-01T00:00:00+00:00',\n"
+            "           'release': release, 'bundle_sha256': bundle,\n"
+            "           'candidate_identity': identity}\n"
+            "(work / 'state' / 'state.json').write_text("
+            "json.dumps(payload, indent=2) + '\\n')\n"
+            "print('CRAFT_OK')\n")
+        r = self.wsl(f"python3 - <<'PYEOF'\n{script}\nPYEOF")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("CRAFT_OK", r.stdout, r.stdout[-400:])
 
     def grant_authorization(self):
         expiry = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
