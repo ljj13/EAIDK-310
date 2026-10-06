@@ -172,3 +172,31 @@ The final config is idempotent under `olddefconfig + syncconfig`; its expected
 kernel release is `6.18.55-eaidk310-zramfix1`. The complete 6.8.4-to-6.18.55
 classification is in `analysis/config-migration-report.md`; the original
 322-line `scripts/diffconfig` output remains unchanged beside it.
+
+## Board trial record (2026-10-07): FAILED, rolled back
+
+Candidate bundle `869c410a…` (READY_FOR_BOARD_TRIAL) was installed and
+armed via `eaidk-ota` on the production board.  The candidate kernel was
+selected and started (serial: `extlinux-candidate.conf` →
+`rockchip-kernel-6.18.55-eaidk310-zramfix1-test` → `Linux version
+6.18.55-eaidk310-zramfix1`) and **hung hard ~4 s into kernel time** (last
+output: mmc1 SDIO -110 retry loop and rk_gmac-dwmac probe), with no panic
+and no watchdog reset — the boot was rollback-classified (bootcount 2 >
+bootlimit 1) because the first armed attempt had already consumed the
+single trial count after booting the stable entry (the
+`/boot/extlinux/extlinux-candidate.conf` operator step was missing on the
+first arm; it is part of the trial procedure that `eaidk-ota install-candidate`
+does not automate — gap recorded for P8).
+
+Power cycle → failsafe chain worked exactly as designed: bootcount 3 >
+bootlimit → `altbootcmd` → stable `6.18.54-eaidk310-zramfix1` booted,
+Tailscale recovered, `eaidk-ota rollback` recorded (state ROLLED_BACK,
+bootstate cleared).  Serial evidence:
+`logs/p7-61855-trial/serial-trial2-boot.log` (local working-copy log).
+
+Verdict: **6.18.55 candidate FAILED board trial** — 6.18.54 remains
+STABLE, no promotion, no release.  Next investigation: the ~289-line
+config migration diff and the 6.18.54..6.18.55 upstream delta around
+mmc/sdio, pinctrl and dwmac; a fixed candidate re-enters the pipeline at
+`release-kernel.sh 6.18.55` (the installed kernel + modules stay on the
+board for a fast re-trial).
