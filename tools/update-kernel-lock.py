@@ -97,20 +97,32 @@ def main(argv: list[str] | None = None) -> int:
     keyring.mkdir(parents=True, exist_ok=True)
     import stat as stat_module
     os.chmod(keyring, stat_module.S_IRWXU)
-    probe = subprocess.run(["gpg", "--homedir", str(keyring), "--list-keys",
-                            "greg@kernel.org"], capture_output=True)
-    if probe.returncode != 0:
-        print("no kernel.org key in cache keyring; fetching from keyserver")
+
+    # kernel.org stable tarballs are signed by the same long-term key; prefer
+    # the fingerprint recorded in an existing production lock, and fetch by
+    # fingerprint (keyservers reject --recv-keys by email more often than not)
+    fingerprint = None
+    for lock in sorted(Path(__file__).resolve().parents[1].glob(
+            "kernel/*/source-lock.json")):
+        recorded = json.loads(lock.read_text(encoding="utf-8")).get("signer_fingerprint")
+        if recorded:
+            fingerprint = recorded
+            break
+    listed = subprocess.run(["gpg", "--homedir", str(keyring), "--list-keys",
+                             fingerprint or "greg@kernel.org"], capture_output=True)
+    if listed.returncode != 0:
+        print(f"fetching signer key ({fingerprint or 'greg@kernel.org'}) from keyserver")
         subprocess.run(["gpg", "--homedir", str(keyring), "--batch",
-                        "--keyserver", args.keyserver, "--recv-keys", "greg@kernel.org"],
+                        "--keyserver", args.keyserver,
+                        "--recv-keys", fingerprint or "greg@kernel.org"],
                        check=True)
-    fingerprint = gpg_validsig(keyring, signature, archive)
-    print(f"signer fingerprint = {fingerprint}")
+    validsig = gpg_validsig(keyring, signature, archive)
+    print(f"signer fingerprint = {validsig}")
 
     candidate = {
         "kernel_version": args.version,
         "localversion": args.localversion,
-        "expected_release": f"{args.version}-{args.localversion}",
+        "expected_release": f"{args.version}-{args.localversion.lstrip('-')}",
         "archive_url": archive_url,
         "signature_url": signature_url,
         "archive_sha256": digest,
