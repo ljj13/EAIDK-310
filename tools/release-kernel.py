@@ -53,6 +53,12 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 BUNDLE_TAR_EPOCH = 1788352262  # initramfs/mkimage/bundle-tar constant of every release pipeline
+# The reference build identity: kernel builds ran as the unprivileged "Fog"
+# user, so the initramfs cpio carries uid/gid 1000 entries (chroot operations
+# ran as root, build operations did not).  The engine normalizes the module
+# staging ownership to this identity before the initramfs snapshot so that
+# rebuilt uInitrd images are byte-comparable with the reference bundle.
+REFERENCE_BUILD_USER = "Fog"
 STAGES = [
     "INIT",
     "SOURCE_VERIFIED",
@@ -538,6 +544,14 @@ class Engine:
                 return cand
         return None
 
+    def _reference_ids(self) -> tuple[int, int]:
+        import pwd
+        try:
+            entry = pwd.getpwnam(REFERENCE_BUILD_USER)
+            return entry.pw_uid, entry.pw_gid
+        except KeyError:
+            return 1000, 1000
+
     def _policy_hash(self) -> str:
         initramfs = self.meta["initramfs"]
         policy = "\n".join([
@@ -612,6 +626,13 @@ class Engine:
         self.run(["cp", "-a", str(base), str(chroot)], stage="initramfs")
         if not (chroot / "usr/bin/qemu-aarch64-static").is_file():
             raise Fail("snapshot lacks qemu-aarch64-static")
+
+        # normalize the staging ownership to the reference build identity so
+        # the cpio entries match the reference bundle (uid 1000 Fog)
+        ref_uid, ref_gid = self._reference_ids()
+        for staged in module_dir.rglob("*"):
+            os.chown(staged, ref_uid, ref_gid)
+        os.chown(module_dir, ref_uid, ref_gid)
 
         chroot_modules = chroot / "lib/modules" / self.release
         if chroot_modules.exists():
@@ -853,7 +874,7 @@ class Engine:
         check("modules_dep_present", (bundle_modules / "modules.dep").stat().st_size > 0)
         check("modules_builtin_present", (bundle_modules / "modules.builtin").is_file())
         check("modules_order_present", (bundle_modules / "modules.order").is_file())
-        depmod_check = self.run(["depmod", "-b", str(bundle), "-n", "-e", self.release],
+        depmod_check = self.run(["depmod", "-b", str(bundle / "root"), "-n", self.release],
                                 stage="verify", check=False, capture=True)
         check("depmod_no_unresolved", depmod_check.returncode == 0,
               (depmod_check.stdout or "")[-400:])
@@ -1068,7 +1089,9 @@ class Engine:
         if args.resume:
             self.run_dir = self._latest_resumable_run()
             self.load_state()
-            if self.state.get("status") == "COMPLETE":
+            if args.from_stage:
+                self._invalidate_from(args.from_stage)
+            if self.state.get("status") == "COMPLETE" and not args.from_stage:
                 print(f"[{self.release}] run already COMPLETE: {self.run_dir}")
                 return 0
             self._verify_completed_stages()
@@ -1128,6 +1151,24 @@ class Engine:
             return 1
         return 0
 
+    def _invalidate_from(self, stage: str) -> None:
+        """--from: drop state from `stage` onward (stages before it stay and
+        their recorded artifact hashes are re-verified by --resume)."""
+        if stage not in STAGES:
+            raise Fail(f"unknown stage: {stage}")
+        stages = self.state.setdefault("stages", {})
+        drop_at = STAGES.index(stage)
+        for name in list(stages):
+            if STAGES.index(name) >= drop_at:
+                del stages[name]
+        for key in ("records", "failure", "failed_stage"):
+            self.state.pop(key, None)
+        self.state["status"] = "RUNNING"
+        self.state["stage"] = STAGES[drop_at - 1] if drop_at else "INIT"
+        self.save_state()
+        print(f"[{self.release}] state invalidated from {stage}; "
+              f"{len(stages)} stages retained")
+
     def _latest_resumable_run(self) -> Path:
         work_dir = self.work_root / "work"
         candidates = sorted(
@@ -1163,6 +1204,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--all", action="store_true", help="= --stage all (default)")
     parser.add_argument("--resume", action="store_true",
                         help="resume the latest FAILED/RUNNING run after re-verifying hashes")
+    parser.add_argument("--from", dest="from_stage", choices=STAGES,
+                        help="with --resume: discard state from this stage onward and rebuild")
     parser.add_argument("--clean", action="store_true",
                         help="delete the per-run workspace before starting (cache/output kept)")
     parser.add_argument("--purge-cache", action="store_true",
