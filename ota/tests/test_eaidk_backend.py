@@ -50,13 +50,26 @@ class BackendFixtureTests(unittest.TestCase):
         self.work = f"{WSL_BASE}/{self.id().split('.')[-1]}"
         r = self.wsl(
             f"rm -rf {self.work} && mkdir -p {self.work}/boot/eaidk-ota "
-            f"{self.work}/state {self.work}/config {self.work}/run")
+            f"{self.work}/state {self.work}/config {self.work}/run "
+            f"{self.work}/feeder-bin {self.work}/wd")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.boot = f"{self.work}/boot"
         self.bootstate = f"{self.boot}/eaidk-ota/bootcount.bin"
+        # P8.2 watchdog-handoff gates: provide the feeder infrastructure the
+        # pre-arm contract demands (stub binary + conditioned unit + device).
+        feeder = f"{self.work}/feeder-bin/eaidk-trial-feed"
+        unit = f"{self.work}/feeder-bin/eaidk-trial-feed.service"
+        self.wsl(f"printf '#!/bin/sh\\necho stub\\n' > {feeder} && "
+                 f"chmod +x {feeder} && "
+                 f"printf '[Unit]\\nConditionKernelCommandLine="
+                 f"eaidk_ota_trial\\n\\n[Service]\\nExecStart={feeder}\\n' "
+                 f"> {unit} && touch {self.work}/wd/watchdog0")
         self.tool_args = (f"--state-dir {self.work}/state --boot-dir {self.boot} "
                           f"--config-dir {self.work}/config --run-dir {self.work}/run "
                           f"--modules-dir {self.work}/modules "
+                          f"--trial-feed-bin {feeder} "
+                          f"--trial-feed-unit {unit} "
+                          f"--watchdog-dev {self.work}/wd/watchdog0 "
                           f"--bootstate-tool {self.wsl_tool}")
 
     def run_tool(self, args: str, backend: str = "bootcount-fs", json_mode: bool = False):

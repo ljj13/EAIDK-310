@@ -1,0 +1,15 @@
+[Unit]
+Description=EAIDK-310 candidate trial watchdog feeder
+# Runs ONLY on armed candidate trial boots (the install-candidate trial
+# entry carries eaidk_ota_trial= in the cmdline).  Normal stable boots skip
+# this unit entirely -- the trial watchdog is never ours to feed there.
+ConditionKernelCommandLine=eaidk_ota_trial
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/eaidk-trial-feed
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

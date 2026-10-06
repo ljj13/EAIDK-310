@@ -870,6 +870,95 @@ def current_default_entry(boot_dir: pathlib.Path) -> dict:
 # --------------------------------------------------------------------------
 
 TRIAL_MARKER_PREFIX = "eaidk_ota_trial="
+# Canonical copies of ota/templates/eaidk-trial-feed{,.service}; a Tier-1
+# test asserts these stay byte-identical to the template files.
+TRIAL_FEED_SCRIPT = '''#!/bin/sh
+# eaidk-trial-feed (P3.7, hardened P8.2): hardware-watchdog feeder for
+# candidate trial boots.
+#
+# U-Boot starts the trial watchdog ONLY when the raw bootstate confirms a
+# candidate trial (armed, increment within bootlimit).  The running kernel
+# auto-pings the watchdog (CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y) until this
+# service opens /dev/watchdog0; from that moment feeding is ours:
+#   - trial boot (eaidk_ota_trial= in cmdline): feed every 10 s while the
+#     bootstate says upgrade_available=1; exit (magic 'V' then close -- the
+#     ONLY clean stop for a U-Boot-started watchdog) once the trial is
+#     committed or cleared.
+#   - hang injection (eaidk_ota_hang_test=1 also present): feed once, then
+#     deliberately stop feeding while holding the fd open -- the watchdog
+#     fires after its TOP and the SoC resets, bootcount exceeds the
+#     bootlimit, and altbootcmd rolls back to the stable entry.
+#     EMPIRICAL (2026-10-05): a plain close also leaves the WDT running
+#     unfed (kernel auto-ping does not resume after the first close), so a
+#     crashed/killed feeder converges to the same hardware reset.
+#   - any other boot: refuse immediately (watchdog is not ours).
+#
+# Test hooks (fixtures only): EAIDK_TEST_CMDLINE is the boot cmdline as a
+# literal string; EAIDK_CANDIDATE_CONF overrides the candidate conf path.
+
+cmdline="${EAIDK_TEST_CMDLINE:-$(cat /proc/cmdline 2>/dev/null)}"
+CONF="${EAIDK_CANDIDATE_CONF:-/boot/extlinux/extlinux-candidate.conf}"
+case "$cmdline" in
+  *eaidk_ota_trial=*) ;;
+  *) echo "eaidk-trial-feed: not a candidate trial boot; refusing" >&2
+     exit 0 ;;
+esac
+
+trial_marker=$(printf '%s\n' "$cmdline" | tr ' ' '\n' | grep '^eaidk_ota_trial=' | head -1)
+conf_marker=$(grep -o 'eaidk_ota_trial=[^ ]*' "$CONF" 2>/dev/null | head -1)
+if [ -z "$conf_marker" ] || [ "$conf_marker" != "$trial_marker" ]; then
+  echo "eaidk-trial-feed: candidate identity mismatch (cmdline=$trial_marker conf=$conf_marker); refusing" >&2
+  exit 3
+fi
+
+WD="${EAIDK_TEST_WATCHDOG:-/dev/watchdog0}"
+[ -e "$WD" ] || { echo "eaidk-trial-feed: no watchdog device at $WD" >&2; exit 1; }
+exec 3>"$WD" || exit 1
+printf 'x' >&3 || exit 1
+echo "eaidk-trial-feed: watchdog ownership taken ($trial_marker)"
+
+case "$cmdline" in
+  *eaidk_ota_hang_test=1*)
+    echo "eaidk-trial-feed: HANG TEST engaged - feeds stop now, fd stays open"
+    exec /bin/sleep infinity
+    ;;
+esac
+
+while :; do
+  sleep 10
+  upg=$("${EAIDK_TEST_BOOTSTATE:-/usr/local/sbin/eaidk-bootstate}" inspect --backend raw \
+        --raw-device /dev/mmcblk2 --json 2>/dev/null | \
+        python3 -c 'import json,sys
+print(json.load(sys.stdin).get("upgrade_available"))' 2>/dev/null)
+  if [ "$upg" != "1" ]; then
+    # trial over: magic 'V' then close -- the ONLY clean stop for a
+    # U-Boot-started watchdog.
+    printf 'V' >&3
+    echo "eaidk-trial-feed: trial no longer armed; watchdog released (magic V)"
+    exit 0
+  fi
+  printf 'x' >&3 || exit 1
+done
+'''
+TRIAL_FEED_UNIT = '''[Unit]
+Description=EAIDK-310 candidate trial watchdog feeder
+# Runs ONLY on armed candidate trial boots (the install-candidate trial
+# entry carries eaidk_ota_trial= in the cmdline).  Normal stable boots skip
+# this unit entirely -- the trial watchdog is never ours to feed there.
+ConditionKernelCommandLine=eaidk_ota_trial
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/eaidk-trial-feed
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
+'''
+TRIAL_FEED_BIN = "/usr/local/sbin/eaidk-trial-feed"
+TRIAL_FEED_UNIT_PATH = "/etc/systemd/system/eaidk-trial-feed.service"
+
 CANDIDATE_CONF = "extlinux/extlinux-candidate.conf"
 
 
@@ -972,7 +1061,13 @@ def install_candidate_conf(boot_dir: pathlib.Path, release: str,
 def prearm_contract(boot_dir: pathlib.Path, state_dir: pathlib.Path,
                     release: str, bundle_sha: str, backend_name: str,
                     raw_state: dict | None,
-                    modules_root: str = "/lib/modules") -> list[tuple[str, bool, str]]:
+                    modules_root: str = "/lib/modules",
+                    watchdog_gates: bool = False,
+                    feeder_bin: str = None,
+                    feeder_unit: str = None,
+                    watchdog_dev: str = None,
+                    sysfs_watchdog: str = "/sys/class/watchdog/watchdog0"
+                    ) -> list[tuple[str, bool, str]]:
     """ARM_ALLOWED checklist (P8.1).  Pure reads: never mutates anything.
     Any False refuses the arm before the raw bootstate is touched."""
     boot = pathlib.Path(boot_dir)
@@ -1076,6 +1171,46 @@ def prearm_contract(boot_dir: pathlib.Path, state_dir: pathlib.Path,
         else:
             safe = True
     add("raw_state_currently_safe", safe, json.dumps(raw_state or {})[:80])
+
+    if not watchdog_gates:
+        return checks
+    # ---- P8.2 watchdog userspace handoff gates ----
+    feeder_path = pathlib.Path(feeder_bin or TRIAL_FEED_BIN)
+    add("trial_feed_binary_present",
+        feeder_path.is_file() and os.access(feeder_path, os.X_OK),
+        str(feeder_path))
+    unit_path = pathlib.Path(feeder_unit or TRIAL_FEED_UNIT_PATH)
+    unit_text = unit_path.read_text(encoding="utf-8") if unit_path.is_file() else ""
+    add("trial_feed_unit_present", unit_path.is_file())
+    add("trial_feed_unit_valid",
+        "ConditionKernelCommandLine=eaidk_ota_trial" in unit_text
+        and "ExecStart=" in unit_text,
+        "unit must gate on the trial cmdline marker and run the feeder")
+    wd_dev = pathlib.Path(watchdog_dev or "/dev/watchdog0")
+    add("watchdog_device_present", wd_dev.exists(), str(wd_dev))
+    add("kernel_watchdog_handoff_supported",
+        (pathlib.Path(sysfs_watchdog).is_dir() if sysfs_watchdog else True)
+        or (wd_dev is not None and wd_dev.exists()),
+        "dw_wdt + watchdog core with HANDLE_BOOT (P3.7/P1.8 empirical)")
+    conf_marker = ""
+    for ln in conf_text.splitlines():
+        if ln.strip().startswith("APPEND "):
+            for tok in ln.split():
+                if tok.startswith(TRIAL_MARKER_PREFIX):
+                    conf_marker = tok
+    add("candidate_trial_marker_valid",
+        bool(conf_marker) and conf_marker == identity.get("marker"),
+        conf_marker)
+    add("feeder_can_identify_current_trial",
+        bool(conf_marker) and conf_marker == (parsed.get("marker") or conf_marker))
+    if pathlib.Path("/run/systemd/system").exists():
+        r = run(["systemctl", "is-active", "eaidk-trial-feed"])
+        state_txt = (r.stdout or "").strip()
+        add("feeder_not_active_on_normal_stable_boot",
+            state_txt in ("inactive", "failed", "unknown", ""),
+            state_txt or "not-found")
+    else:
+        add("feeder_not_active_on_normal_stable_boot", True, "no systemd (fixture)")
     return checks
 
 
@@ -1306,6 +1441,29 @@ def _backend_or_refusal(args):
     return backend, None
 
 
+def cmd_install_trial_feed(args) -> int:
+    """Install the trial watchdog feeder (P8.2): binary + systemd unit with
+    the trial-cmdline condition, then enable it.  Persistent infrastructure
+    (not a boot mutation): needs root, not the local-authorization token."""
+    if os.geteuid() != 0:
+        return fail_exit(EXIT_AUTH, "install-trial-feed must run as root")
+    bin_path = pathlib.Path(TRIAL_FEED_BIN)
+    unit_path = pathlib.Path(TRIAL_FEED_UNIT_PATH)
+    atomic_write_text(bin_path, TRIAL_FEED_SCRIPT)
+    os.chmod(bin_path, 0o755)
+    unit_dir = unit_path.parent
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(unit_path, TRIAL_FEED_UNIT)
+    run(["systemctl", "daemon-reload"])
+    r_enable = run(["systemctl", "is-enabled", "eaidk-trial-feed.service"])
+    if "enabled" not in (r_enable.stdout or ""):
+        run(["systemctl", "enable", "eaidk-trial-feed.service"])
+    print("TRIAL_FEED_INSTALL=PASS")
+    print(f"  {bin_path}")
+    print(f"  {unit_path} (enabled; runs only on eaidk_ota_trial= boots)")
+    return EXIT_OK
+
+
 def cmd_try(args) -> int:
     backend, refusal = _backend_or_refusal(args)
     if refusal is not None:
@@ -1322,7 +1480,11 @@ def cmd_try(args) -> int:
     checks = prearm_contract(pathlib.Path(args.boot_dir),
                              pathlib.Path(args.state_dir),
                              release, bundle_sha, backend.name, raw_state,
-                             modules_root=getattr(args, "modules_dir", "/lib/modules"))
+                             modules_root=getattr(args, "modules_dir", "/lib/modules"),
+                             watchdog_gates=True,
+                             feeder_bin=getattr(args, "trial_feed_bin", None),
+                             feeder_unit=getattr(args, "trial_feed_unit", None),
+                             watchdog_dev=getattr(args, "watchdog_dev", None))
     failed = [c for c in checks if not c[1]]
     if failed:
         print("ARM_REFUSED (raw bootstate untouched):")
@@ -1503,6 +1665,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--state-dir", default=os.environ.get("EAIDK_OTA_STATE", DEFAULT_STATE_DIR))
     p.add_argument("--boot-dir", default=os.environ.get("EAIDK_OTA_BOOT", DEFAULT_BOOT_DIR))
     p.add_argument("--modules-dir", default=os.environ.get("EAIDK_OTA_MODULES", "/lib/modules"))
+    p.add_argument("--trial-feed-bin", default=TRIAL_FEED_BIN)
+    p.add_argument("--trial-feed-unit", default=TRIAL_FEED_UNIT_PATH)
+    p.add_argument("--watchdog-dev", default="/dev/watchdog0")
     p.add_argument("--config-dir", default=DEFAULT_CONFIG_DIR)
     p.add_argument("--run-dir", default=DEFAULT_RUN_DIR)
     p.add_argument("--backend", choices=("auto", "none", "bootcount-fs", "raw"),
@@ -1534,6 +1699,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("release")
 
     sub.add_parser("install-candidate", help="install staged candidate (locked: local auth)")
+    sub.add_parser("install-trial-feed",
+                   help="install/enable the trial watchdog feeder (root; persistent infra)")
     health = sub.add_parser("health", help="run CRITICAL + REMOTE health checks")
     health.add_argument("--expected-release")
     health.add_argument("--network-retries", type=int, default=3)
@@ -1555,6 +1722,7 @@ def main(argv=None) -> int:
     args.run_dir = pathlib.Path(args.run_dir)
     args.config_dir = pathlib.Path(args.config_dir)
     handlers = {
+    "install-trial-feed": cmd_install_trial_feed,
         "inspect": cmd_inspect, "verify": cmd_verify, "stage": cmd_stage,
         "status": cmd_status, "history": cmd_history,
         "plan-install": cmd_plan_install, "install-candidate": cmd_install_candidate,
