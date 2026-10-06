@@ -455,11 +455,23 @@ class Engine:
         venv_bin = self._dtschema_venv()
         if venv_bin:
             env["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
-        if not shutil.which("dt-validate"):
-            print("[release] dt-validate missing; installing dtschema via pip --user")
-            self.run(["python3", "-m", "pip", "install", "--quiet", "--user", "dtschema"],
-                     stage="build")
-            env["PATH"] = f"{Path.home() / '.local' / 'bin'}:{os.environ.get('PATH', '')}"
+        if not shutil.which("dt-validate") and not (venv_bin and Path(venv_bin, "dt-validate").exists()):
+            print("[release] dt-validate missing; installing dtschema into a pipeline venv")
+            venv_root = self.cache_root / "tools" / "dtschema-venv"
+            if not (venv_root / "bin" / "dt-validate").exists():
+                venv_root.parent.mkdir(parents=True, exist_ok=True)
+                venv_ok = self.run(["python3", "-m", "venv", str(venv_root)],
+                                   stage="build", check=False).returncode == 0
+                pip_cmd = (["python3", "-m", "pip", "install", "--quiet", "--user",
+                            "dtschema"] if not venv_ok else
+                           [str(venv_root / "bin" / "pip"), "install", "--quiet", "dtschema"])
+                if not venv_ok:
+                    print("[release] python3-venv unavailable; falling back to pip --user")
+                self.run(pip_cmd, stage="build")
+            env["PATH"] = f"{venv_root / 'bin'}:{os.environ.get('PATH', '')}"
+        if not shutil.which("dt-validate") and not (venv_bin and Path(venv_bin, "dt-validate").exists()):
+            # final confirmation happens through make CHECK_DTBS itself
+            print("[release] warning: dt-validate still not on PATH; CHECK_DTBS will judge")
         if not shutil.which("aarch64-linux-gnu-gcc"):
             raise Fail("cross toolchain missing: install gcc-aarch64-linux-gnu")
 
