@@ -1,0 +1,54 @@
+name: release-build
+
+# P7 reproducible release pipeline, manually triggered only.
+# This is experimental: a full kernel build + debootstrap initramfs on a
+# hosted runner takes roughly 1-2 hours and ~10 GB disk.  If hosted runners
+# prove too slow or unstable, the supported path is the local/WSL pipeline
+# (docs/release-pipeline.md); push/PR CI remains the fast Tier-1 gate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'kernel version to release (e.g. 6.18.54)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            debootstrap qemu-user-static binfmt-support \
+            initramfs-tools-core busybox-static zstd \
+            device-tree-compiler u-boot-tools kmod rsync \
+            libssl-dev flex bison bc dwarves
+          python3 -m pip install --quiet dtschema
+      - name: Build release candidate
+        run: |
+          sudo -E ./tools/release-kernel.sh "${{ inputs.kernel_version }}" --jobs "$(nproc)"
+      - name: Collect artifacts
+        run: |
+          out="release-artifacts"
+          mkdir -p "$out"
+          find "${EAIDK_WORK_ROOT:-$HOME/.cache/eaidk310/release}/output" \
+            -maxdepth 2 -type f -print0 | xargs -0 -I{} cp {} "$out/" || true
+          cp -r "$HOME/.cache/eaidk310/release/work"/*.*/logs "$out/" 2>/dev/null || true
+          ls -la "$out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eaidk310-release-${{ inputs.kernel_version }}
+          path: release-artifacts/
+          retention-days: 14
