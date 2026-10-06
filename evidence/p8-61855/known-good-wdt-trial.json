@@ -1,0 +1,18 @@
+{
+  "bundle_sha256": "989093725bdec974ebda8a031dcb083bcc7802ba51ae7c24a143557834505f06",
+  "candidate": "6.18.54-eaidk310-zramfix1",
+  "classification": "TRIAL (bootcount 0->1 within bootlimit=1, WDT armed)",
+  "date": "2026-10-07",
+  "gate": "PASS",
+  "health": {
+    "CRITICAL_BOOT_HEALTH": "PASS",
+    "REMOTE_HEALTH": "PASS"
+  },
+  "promotion": "NOT_PERFORMED (candidate == current stable)",
+  "serial_evidence": [
+    "WDT: Started watchdog@ff1a0000 with servicing every 1000ms (30s timeout)",
+    "bootcount-raw: trial watchdog via watchdog@ff1a0000 (30000 ms) rc=0",
+    "extlinux-candidate.conf selected -> -test entry",
+    "cmdline marker eaidk_ota_trial=6.18.54-eaidk310-zramfix1@989093725bde"
+  ]
+}

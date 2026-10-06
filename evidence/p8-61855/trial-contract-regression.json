@@ -1,0 +1,17 @@
+{
+  "cases": {
+    "case1_missing_conf": "REFUSED",
+    "case2_wrong_image": "REFUSED",
+    "case3_wrong_uinitrd": "REFUSED",
+    "case4_wrong_dtb": "REFUSED",
+    "case5_missing_modules_dep": "REFUSED",
+    "case6_missing_marker": "REFUSED",
+    "case7_identity_mismatch": "REFUSED",
+    "case8_all_consistent": "ALLOWED",
+    "cli_arm_refusal": "EXIT_AUTH, raw bootstate byte-identical",
+    "conf_generation_readback": "PASS"
+  },
+  "date": "2026-10-07",
+  "gate": "PASS",
+  "raw_bootstate_mutated_on_refusal": false
+}

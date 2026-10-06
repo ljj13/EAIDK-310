@@ -1,0 +1,10 @@
+{
+  "A_good_61854_sha256_source": "P7 reproducible build final .config (byte-exact vs official v2026.10.06 bundle lineage)",
+  "B_pipeline_61855": "6.18.55 candidate-1 final .config",
+  "C_oracle_61855": "6.18.55 fresh upstream + board patch + A as seed + olddefconfig only",
+  "date": "2026-10-07",
+  "functional_diff_A_vs_B": 0,
+  "functional_diff_B_vs_C": 0,
+  "note": "the earlier 289-line unified diff was line-ordering noise, zero functional symbol deltas",
+  "verdict": "CONFIG_PIPELINE_EQUALS_ORACLE=YES; CONFIG_ROOT_CAUSE=REJECTED"
+}

@@ -1,0 +1,18 @@
+{
+  "board_state_after": "ROLLED_BACK to 6.18.54 stable (unarmed, not default), candidate files left on board for user-promotion decision",
+  "candidate_identity": "6.18.55-eaidk310-zramfix1 @ 869c410a08484fd8337ad7a5fa214d54ef807f4fd270a9f18c592397d0c43eea (same bundle as candidate-1: kernel bytes unchanged, only the trial conf root= UUID was wrong)",
+  "cmdline_marker": "eaidk_ota_trial=6.18.55-eaidk310-zramfix1@869c410a0848",
+  "health": {
+    "CRITICAL_BOOT_HEALTH": "PASS",
+    "REMOTE_HEALTH": "PASS"
+  },
+  "ready_for_promotion": "YES (user decision pending); trial watchdog feeder unit remains uninstalled (P3.7 template, known gap, kernel auto-ping covers the trial window)",
+  "retrial_date": "2026-10-07",
+  "root_cause": "STALE_TRIAL_CONF_ROOT_UUID: repo-rendered APPEND carried root=UUID=bd2a6dbf... (not present on board; real rootfs 781e1dc3...) -> candidate-1 waited in rootwait forever (loglevel=4 hid it), with no watchdog because the first arm had already consumed the trial count on a boot missing the candidate conf",
+  "serial_evidence": [
+    "WDT: Started watchdog@ff1a0000 (30s timeout) - trial classification correct",
+    "bootcount-raw: trial watchdog rc=0",
+    "extlinux-candidate.conf -> 6.18.55-test entry -> Linux 6.18.55 booted to login prompt"
+  ],
+  "trial": "PASS"
+}

@@ -1,0 +1,4 @@
+{
+  "reason": "no upstream regression: candidate kernel boots to userspace and passes health when given a correct root= cmdline",
+  "status": "NOT_RUN"
+}

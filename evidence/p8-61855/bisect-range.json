@@ -1,0 +1,8 @@
+{
+  "ancestry_verified": true,
+  "bad_endpoint_v6.18.55": "725bd2f3c81d54edccb66fead01d4c0c222e2231",
+  "bisect_required": false,
+  "good_endpoint_v6.18.54": "1b357ecb321392158d507b04672ffee57bfa071d",
+  "range_commits": 395,
+  "reason": "root cause identified before bisect: trial conf root= UUID mismatch, not a kernel regression"
+}
