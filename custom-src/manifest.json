@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "entries": [
+    {
+      "component": "u-boot",
+      "upstream_path": "arch/arm/dts/rk3328-eaidk310-common.dtsi",
+      "mirror_path": "custom-src/u-boot/arch/arm/dts/rk3328-eaidk310-common.dtsi",
+      "source_patch": "0001-arm-dts-add-eaidk310-variants.patch",
+      "method": "patch-new-file",
+      "role": "production",
+      "sha256": "0f6ae9be015fcad59502fd5e6cefd0ae2d55d3c4277dfe712294f5df0bf8d416"
+    },
+    {
+      "component": "u-boot",
+      "upstream_path": "arch/arm/dts/rk3328-eaidk310-control.dts",
+      "mirror_path": "custom-src/u-boot/arch/arm/dts/rk3328-eaidk310-control.dts",
+      "source_patch": "0001-arm-dts-add-eaidk310-variants.patch",
+      "method": "patch-new-file",
+      "role": "production",
+      "sha256": "4cc46df697550687e223488124c521b457b9ef47425bd33db85aff81c32dc6c5"
+    },
+    {
+      "component": "u-boot",
+      "upstream_path": "arch/arm/dts/rk3328-eaidk310-control-u-boot.dtsi",
+      "mirror_path": "custom-src/u-boot/arch/arm/dts/rk3328-eaidk310-control-u-boot.dtsi",
+      "source_patch": "0001-arm-dts-add-eaidk310-variants.patch",
+      "method": "patch-new-file",
+      "role": "production",
+      "sha256": "e1118f4e42f1bd6829f559d08b9a313e945654449709fc84e24306562fcf04d6"
+    },
+    {
+      "component": "u-boot",
+      "upstream_path": "arch/arm/dts/rk3328-eaidk310-sdio-handoff.dts",
+      "mirror_path": "custom-src/u-boot/arch/arm/dts/rk3328-eaidk310-sdio-handoff.dts",
+      "source_patch": "0001-arm-dts-add-eaidk310-variants.patch",
+      "method": "patch-new-file",
+      "role": "experimental",
+      "sha256": "984e35272fe4f30155c16c1b00b373f4a1d5a7f8492554b8d05abac664b6f176"
+    },
+    {
+      "component": "u-boot",
+      "upstream_path": "arch/arm/dts/rk3328-eaidk310-sdio-handoff-u-boot.dtsi",
+      "mirror_path": "custom-src/u-boot/arch/arm/dts/rk3328-eaidk310-sdio-handoff-u-boot.dtsi",
+      "source_patch": "0001-arm-dts-add-eaidk310-variants.patch",
+      "method": "patch-new-file",
+      "role": "experimental",
+      "sha256": "e1118f4e42f1bd6829f559d08b9a313e945654449709fc84e24306562fcf04d6"
+    },
+    {
+      "component": "u-boot",
+      "upstream_path": "configs/eaidk310-control-rk3328_defconfig",
+      "mirror_path": "custom-src/u-boot/configs/eaidk310-control-rk3328_defconfig",
+      "source_patch": "0001-arm-dts-add-eaidk310-variants.patch",
+      "method": "patch-new-file",
+      "role": "production",
+      "sha256": "73baf2e665c91cc531b48384204af66bc861a774c99315a1e5f43031b3fca533"
+    },
+    {
+      "component": "u-boot",
+      "upstream_path": "configs/eaidk310-sdio-handoff-rk3328_defconfig",
+      "mirror_path": "custom-src/u-boot/configs/eaidk310-sdio-handoff-rk3328_defconfig",
+      "source_patch": "0001-arm-dts-add-eaidk310-variants.patch",
+      "method": "patch-new-file",
+      "role": "experimental",
+      "sha256": "273e00e313aeb00cc75326ee0f9df4af2cb121109ee01c67b3b91a4127b7a07b"
+    },
+    {
+      "component": "u-boot",
+      "upstream_path": "configs/eaidk310-failsafe-fs-rk3328_defconfig",
+      "mirror_path": "custom-src/u-boot/configs/eaidk310-failsafe-fs-rk3328_defconfig",
+      "source_patch": "0002-failsafe-bootcount-fs.patch",
+      "method": "patch-new-file",
+      "role": "alternative",
+      "sha256": "5f3f804e024602f43814aac36cf4fcbe98403fbc60e163db74fdca25e70753b1"
+    },
+    {
+      "component": "u-boot",
+      "upstream_path": "configs/eaidk310-failsafe-raw-rk3328_defconfig",
+      "mirror_path": "custom-src/u-boot/configs/eaidk310-failsafe-raw-rk3328_defconfig",
+      "source_patch": "0003-failsafe-raw-bootstate.patch",
+      "last_patch": "0004-trial-watchdog.patch",
+      "method": "patched-stack",
+      "role": "production",
+      "sha256": "641d4da5964694e5be68f5a707d7b048fe3c16d8d8ffd4671105b6a35a0d4a9f"
+    },
+    {
+      "component": "u-boot",
+      "upstream_path": "drivers/bootcount/bootcount_eaidk310_raw.c",
+      "mirror_path": "custom-src/u-boot/drivers/bootcount/bootcount_eaidk310_raw.c",
+      "source_patch": "0003-failsafe-raw-bootstate.patch",
+      "last_patch": "0004-trial-watchdog.patch",
+      "method": "patched-stack",
+      "role": "production",
+      "sha256": "2cf48a47e00afe7f323e8ba5e2407e800ef64260f4120115bda8a9136f38dfa0"
+    },
+    {
+      "component": "linux",
+      "upstream_path": "arch/arm64/boot/dts/rockchip/rk3328-eaidk-310.dts",
+      "mirror_path": "custom-src/linux/arch/arm64/boot/dts/rockchip/rk3328-eaidk-310.dts",
+      "source_patch": null,
+      "source_path": "kernel/linux-6.18.54-zramfix1/dts/rk3328-eaidk-310.dts",
+      "method": "repo-canonical",
+      "role": "production",
+      "sha256": "662809e14fc2302246da552dcedfac8317ea168e058ea2a3bf1df9d493ba0fd9"
+    }
+  ]
+}

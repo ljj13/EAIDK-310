@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/dts-v1/;
+#include "rk3328.dtsi"
+#include "rk3328-eaidk310-common.dtsi"
+
+&sdio {
+	status = "disabled";
+};
