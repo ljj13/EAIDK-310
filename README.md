@@ -111,6 +111,18 @@ classifies every file the patches touch.  Files this project only modifies
 upstream (Kconfig, Makefiles, watchdog glue) stay patch-only and are listed
 in the inventory.
 
+## Release engineering
+
+`./tools/release-kernel.sh <version>` drives the reproducible release
+pipeline: source authentication against `source-lock.json`, isolated
+materialization, patch application, config gates, kernel build, initramfs
+(per-run rootfs snapshot — no shared chroot), deterministic packaging,
+Tier-2 artifact acceptance and release manifests, ending at
+`READY_FOR_BOARD_TRIAL`.  Board OTA and stable promotion stay separate,
+explicitly approved steps.  See
+[docs/release-pipeline.md](docs/release-pipeline.md) and the workspace model
+in [docs/P7-BUILD-PIPELINE-AUDIT.md](docs/P7-BUILD-PIPELINE-AUDIT.md).
+
 ## Quick start
 
 * Build the current kernel: [kernel/linux-6.18.54-zramfix1/](kernel/linux-6.18.54-zramfix1/)
