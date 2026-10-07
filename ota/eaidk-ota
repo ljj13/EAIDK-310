@@ -416,21 +416,28 @@ class LocalAuthorization:
         # (ssh pts, pipes, redirected files, unknown fds...)
         return self.session_tty() not in LOCAL_TTYS
 
-    def create(self) -> int:
+    def create(self, binding: dict | None = None) -> int:
         if self.remote_session():
             print("ERROR: authorization refused for remote session "
                   f"(tty={self.session_tty()}). "
                   "authorize-local must run on a physical console (ttyS2/tty1).")
             return EXIT_AUTH
         expiry = datetime.now(timezone.utc) + timedelta(seconds=AUTH_TTL_SECONDS)
-        payload = json.dumps({
+        payload = {
             "issued": now_iso(),
             "expires": expiry.isoformat(timespec="seconds"),
             "tty": self.session_tty(),
             "ttl_seconds": AUTH_TTL_SECONDS,
-        }, indent=2) + "\n"
-        atomic_write(self.token, payload)
+        }
+        if binding:
+            # install-candidate requires a token bound to exactly one
+            # candidate/bundle/backend/stable tuple; the physical-console
+            # operator states what they authorize at mint time.
+            payload["binding"] = dict(binding)
+        atomic_write(self.token, json.dumps(payload, indent=2) + "\n")
         print(f"local authorization granted until {expiry.isoformat(timespec='seconds')}")
+        if binding:
+            print(f"binding: {json.dumps(binding, sort_keys=True)}")
         return EXIT_OK
 
     def valid(self) -> (bool, str):
@@ -455,8 +462,8 @@ class LocalAuthorization:
             return False, f"unreadable authorization token: {exc}"
         binding = data.get("binding")
         if not isinstance(binding, dict):
-            return False, "authorization token carries no binding; "
-        "remote boot mutation requires a bound token"
+            return False, ("authorization token carries no binding; "
+                           "remote boot mutation requires a bound token")
         for key, want in expected.items():
             got = binding.get(key)
             if got != want:
@@ -1446,7 +1453,23 @@ def cmd_install_candidate(args) -> int:
 
 def cmd_authorize_local(args) -> int:
     auth = LocalAuthorization(args.run_dir, args.config_dir)
-    return auth.create()
+    binding = None
+    if args.candidate or args.bundle_sha256 or args.stable:
+        missing = [name for name, value in (
+            ("--candidate", args.candidate),
+            ("--bundle-sha256", args.bundle_sha256),
+            ("--stable", args.stable),
+        ) if not value]
+        if missing:
+            return fail_exit(EXIT_ERROR,
+                             "partial binding: missing " + ", ".join(missing))
+        binding = {
+            "candidate": args.candidate,
+            "bundle_sha256": args.bundle_sha256,
+            "backend": FAILSAFE_BOOT_BACKEND,
+            "stable": args.stable,
+        }
+    return auth.create(binding)
 
 
 def _backend_or_refusal(args):
@@ -1756,8 +1779,15 @@ def build_parser() -> argparse.ArgumentParser:
     health.add_argument("--network-retry-wait", type=int, default=60,
                         help="seconds between remote health retries")
 
-    sub.add_parser("authorize-local",
-                   help="grant a 15-minute boot-mutation token (physical console only)")
+    authp = sub.add_parser(
+        "authorize-local",
+        help="grant a 15-minute boot-mutation token (physical console only)")
+    authp.add_argument("--candidate",
+                       help="bind the token to one candidate release string")
+    authp.add_argument("--bundle-sha256",
+                       help="bind the token to the staged bundle sha256")
+    authp.add_argument("--stable",
+                       help="bind the token to the current stable extlinux label")
     sub.add_parser("try", help="arm a one-shot candidate boot (requires verified backend)")
     sub.add_parser("arm", help="alias of try")
     sub.add_parser("commit", help="commit a healthy candidate (requires verified backend)")
