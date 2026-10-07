@@ -180,3 +180,32 @@ FIX = sdio-pwrseq post-power-on-delay-ms = <100> (candidate 6.18.55-eaidk310-wif
 | L8 UART0/serdev | PASS to the bus layer; probe deferred (clock) |
 | L9–L10 BT firmware/hci0 | NOT_REACHED |
 | L11 coexistence | NOT_REACHED |
+
+## P9 candidate trials (2026-10-07, same day)
+
+Three candidates went through the full P7 → OTA trial chain; each trial
+booted once under the watchdog and was committed after
+CRITICAL+REMOTE health PASS.
+
+| Candidate | Delta | Outcome |
+| --- | --- | --- |
+| `6.18.55-eaidk310-wifi1` | pwrseq `post-power-on-delay-ms=<100>`; `CONFIG_COMMON_CLK_RK808=y` | BT software chain fixed: serial0-0 binds `hci_uart_bcm`, rk805-clkout2 lpo registered (32 768 Hz, consumer serial0-0), `hci0` created; SDIO still dead (CMD5 silent cold) |
+| `6.18.55-eaidk310-wifi2` | − `sd-uhs-sdr104` (TEST B) | **`mmc1: new high speed SDIO card`** — the S18R request was suppressing the CMD5 response; brcmfmac probe −52 with `F1 signature read = 0xffffffff` |
+| `6.18.55-eaidk310-wifi3` | `bus-width=<1>` (TEST C) | **`F1 signature = 0x15264345` → chip BCM4345/6 alive** (identity matches the factory journal); firmware request chain starts; download stalls at `brcmf_sdio_htclk: HT Avail timeout (clkctl 0x50)` |
+
+Isolated hardware faults, in order of discovery:
+
+1. D1–D3 SDIO data lines: 4-bit backplane reads return `0xffffffff`
+   while 1-bit (D0-only) reads return correct chip data.
+2. Chip PMU never reports ALP available → firmware download cannot
+   start (HT/ALP timeout with clkctl `0x50`) despite the LPO clock being
+   registered and register-enabled at the RK805.
+3. Bluetooth UART: `hci0` runs the full probe but every vendor command
+   (`0xfc45`) tx-times out — the module never drives UART RX.
+
+Reliability on the final stable (`6.18.55-eaidk310-wifi3`): 5/5 warm
+reboots with kernel + Tailscale + 0 failed units + SDIO card + hci0
+present every time.  Cold boots: NOT_RUN_WITH_REASON (needs a physical
+power cycle).  Remaining verification (module VBAT/VDDIO rails, LPO at
+the module pin, D1–D3 continuity, UART RX) requires instruments: see
+`evidence/current/p9-wireless.json` → `next_measurement`.

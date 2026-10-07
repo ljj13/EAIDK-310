@@ -2,21 +2,68 @@
   "phase": "P9",
   "date": "2026-10-07",
   "baseline_kernel": "6.18.55-eaidk310-zramfix1",
-  "candidate": "6.18.55-eaidk310-wifi1",
-  "module_identity": {
-    "wifi_silicon": "BCM43455 (chip 0x4345 rev 0x6, factory journal)",
-    "bt_silicon": "BCM4345C5-class",
-    "module_vendor": "Ampak-class combo per factory firmware set",
-    "module_marking": "UNKNOWN"
+  "candidates": {
+    "6.18.55-eaidk310-wifi1": {
+      "bundle_sha256": "7c479b5caf50644febc14e57a361f8ef2fefafc5d2c45585e775ebee81efc42d",
+      "delta": "sdio-pwrseq post-power-on-delay-ms=<100>; CONFIG_COMMON_CLK_RK808=y",
+      "trial": "PASS (WDT trial, health CRITICAL+REMOTE, committed)",
+      "result": "BLUETOOTH_SOFTWARE_LAYER_FIXED (serial0-0 bound hci_uart_bcm, rk805-clkout2 lpo enabled, hci0 created); SDIO enumeration still failed (CMD5 dead cold)"
+    },
+    "6.18.55-eaidk310-wifi2": {
+      "bundle_sha256": "ef2e48f5e5bc8ed447fd66d63249c04be0907698578d922d7da871bfa936726c",
+      "delta": "wifi1 minus sd-uhs-sdr104 (TEST B)",
+      "trial": "PASS (health CRITICAL+REMOTE, committed with extlinux promotion)",
+      "result": "SDIO_ENUMERATION=PASS (mmc1: new high speed SDIO card at 50MHz without UHS - confirms S18R suppression theory); brcmfmac probe -52 (F1 signature read 0xffffffff)"
+    },
+    "6.18.55-eaidk310-wifi3": {
+      "bundle_sha256": "2f5f174de66969c836df8f39ebbdfe307834d4999c3f21e7895b3617950b400e",
+      "delta": "wifi2 with bus-width=<1> (TEST C: D0-only data path)",
+      "trial": "PASS (health CRITICAL+REMOTE, committed, extlinux promoted)",
+      "result": "CHIP_ALIVE: F1 signature 0x15264345 = BCM4345/6 (matches the factory journal identity); firmware request chain starts; firmware download stalls at brcmf_sdio_htclk HT/ALP timeout (clkctl 0x50)"
+    }
   },
-  "live_dts_match": "YES",
-  "baseline_failure": {
-    "wifi_layer": "L3 SDIO enumeration",
-    "wifi_root_cause": "POWER_SEQUENCE (sdio-pwrseq missing post-power-on-delay-ms; CMD5 issued ~13 ms after WL_REG_ON)",
-    "wifi_fix": "post-power-on-delay-ms = <100>",
-    "bt_root_cause": "KERNEL_CONFIG_MISSING (CONFIG_COMMON_CLK_RK808 not set; rk805 lpo clock provider never registers; hci_bcm probe defers forever)",
-    "bt_fix": "CONFIG_COMMON_CLK_RK808=y"
+  "reboot_matrix": {
+    "warm_reboots": "5/5 PASS on 6.18.55-eaidk310-wifi3 (kernel + tailscale + 0 failed units + SDIO card enumerated + hci0 present every boot)",
+    "cold_boots": "NOT_RUN_WITH_REASON (requires physical power-cycle access)"
   },
-  "provenance": "vendor/provenance/cyw43455.md",
-  "status": "BASELINE_COMPLETE_CANDIDATE_BUILDING"
+  "root_causes": {
+    "bluetooth_silent_deferral": {
+      "layer": "L8/L9 kernel config",
+      "cause": "CONFIG_COMMON_CLK_RK808 unset -> rk805 lpo clock provider never registers -> hci_bcm probe defers forever (silent)",
+      "fix": "CONFIG_COMMON_CLK_RK808=y",
+      "status": "FIXED_AND_PROVEN"
+    },
+    "sdio_enumeration": {
+      "layer": "L3",
+      "cause": "power sequence had no settle delay AND the module's 1.8V-switch path suppresses the CMD5 response when the host requests S18R",
+      "fix": "post-power-on-delay-ms=<100> + drop sd-uhs-sdr104",
+      "status": "FIXED_AND_PROVEN"
+    },
+    "remaining_chip_silence": {
+      "layer": "L0/L1 hardware",
+      "evidence": [
+        "wifi3 (1-bit SDIO): backplane reads work and the chip identifies as BCM4345/6 - the D1-D3 data lines are the 4-bit-mode failure (F1 signature 0xffffffff)",
+        "firmware download stalls at brcmf_sdio_htclk HT/ALP timeout - the chip PMU never reports ALP available",
+        "hci0 BCM commands tx-timeout (UART framing alive, chip never replies)",
+        "failure identical on factory 4.4 stack, 6.12/6.18 stacks; factory journal shows the module once enumerated 0x4345 rev 6 and loaded firmware successfully",
+        "both REG_ON lines driven correct per debugfs gpio; rk805-clkout2 lpo registered+enabled 32768 Hz for serial0-0"
+      ],
+      "classification": "PHYSICAL_MEASUREMENT_REQUIRED",
+      "next_measurement": [
+        "module VBAT (expect 3.3 V from vcc_io) and VDDIO (expect 1.8 V from vcc_18) at the module pins",
+        "32.768 kHz LPO at the module LPO pin (RK805 clkout2 is register-enabled; verify it reaches the module)",
+        "SDIO D1-D3 continuity from RK3328 GPIO1_B7/C0/C1 to the module (4-bit mode reads 0xffffffff, 1-bit D0-only works)",
+        "UART0 RX (GPIO1_B0 <- module BT_TX) activity during hci0 probe bursts"
+      ]
+    }
+  },
+  "ota_infrastructure_fixes": [
+    "release_consistent check generalized to -eaidk310-<variant>",
+    "authorize-local gains bound-token minting (--candidate/--bundle-sha256/--stable)",
+    "commit now promotes: appends stable extlinux entry + flips default (atomic, readback validated, before bootstate clear)",
+    "promotion DTB lookup by variant name",
+    "/boot space: superseded 6.18.55-zramfix1 boot files removed after wifi1 promotion; 6.8.4-era files archived to /root/p9-boot-archive"
+  ],
+  "board_state": "6.18.55-eaidk310-wifi3 committed stable (extlinux default, promotion code exercised), 5/5 warm reboots clean, ethernet+tailscale no regression, 0 failed units",
+  "status": "P9_COMPLETE_WITH_HARDWARE_BLOCKER"
 }
