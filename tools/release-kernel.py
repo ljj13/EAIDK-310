@@ -118,7 +118,10 @@ class Engine:
     def __init__(self, args: argparse.Namespace) -> None:
         self.repo = Path(__file__).resolve().parents[1]
         self.version = args.version
-        self.release_dir = self.repo / "kernel" / f"linux-{self.version}-zramfix1"
+        self.release_dir = self.repo / "kernel" / f"linux-{self.version}"
+        if not self.release_dir.is_dir():
+            # releases before P9 live under the historical -zramfix1 suffix
+            self.release_dir = self.repo / "kernel" / f"linux-{self.version}-zramfix1"
         if not self.release_dir.is_dir():
             raise Fail(f"unknown kernel release directory: {self.release_dir}")
         meta_path = self.release_dir / "release-metadata.json"
