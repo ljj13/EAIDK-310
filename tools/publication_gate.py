@@ -69,7 +69,13 @@ def scan_repository(root: Path) -> list[str]:
     errors: list[str] = []
     for path in sorted(_publishable_files(root),
                        key=lambda item: item.as_posix().lower()):
-        if not path.is_file() or path.is_symlink():
+        if path.is_symlink():
+            try:
+                path.resolve(strict=False).relative_to(root)
+            except ValueError:
+                errors.append(f"escaping symlink: {path.relative_to(root).as_posix()}")
+            continue
+        if not path.is_file():
             continue
         relative = path.relative_to(root)
         size = path.stat().st_size
