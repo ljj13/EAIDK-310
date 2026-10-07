@@ -573,18 +573,31 @@ def collect_dns():
 
 
 def collect_connectivity():
-    """Layered connectivity: v6 direct, v4 direct, v4 via local proxy."""
-    data = {"v6_internet": None, "v4_direct": None, "proxy_7890": None}
+    """Layered connectivity: v6 direct, v4 direct, v4 via local proxy.
+
+    Probe targets must be reachable natively from the board's network
+    (CERNET v6 here): google/generate_204 is blocked on the path and would
+    read as "no v6 internet" while native v6 is fine.  Any HTTP response
+    counts as connected; only transport failure (curl rc != 0) fails.
+    Override with EAIDK_HEALTH_V6_PROBE / EAIDK_HEALTH_V4_PROBE.
+    """
+    import os as _os
+    v6_target = _os.environ.get("EAIDK_HEALTH_V6_PROBE",
+                                "https://dns.alidns.com/")
+    v4_target = _os.environ.get("EAIDK_HEALTH_V4_PROBE",
+                                "https://dns.alidns.com/")
+    data = {"v6_probe": v6_target, "v6_internet": None,
+            "v4_direct": None, "proxy_7890": None}
     rc, _ = run_cmd(["curl", "-6", "-s", "-o", "/dev/null", "-m", "8",
-                     "-w", "%{http_code}", "https://www.google.com/generate_204"])
+                     "-w", "%{http_code}", v6_target])
     data["v6_internet"] = (rc == 0)
-    rc, out = run_cmd(["curl", "-4", "-s", "-o", "/dev/null", "-m", "8",
-                       "-w", "%{http_code}", "https://www.google.com/generate_204"])
+    rc, _ = run_cmd(["curl", "-4", "-s", "-o", "/dev/null", "-m", "8",
+                     "-w", "%{http_code}", v4_target])
     data["v4_direct"] = (rc == 0)
-    rc, out = run_cmd(["curl", "-s", "-o", "/dev/null", "-m", "5", "-x",
-                       "http://127.0.0.1:7890",
-                       "-w", "%{http_code}",
-                       "https://www.google.com/generate_204"])
+    rc, _ = run_cmd(["curl", "-s", "-o", "/dev/null", "-m", "5", "-x",
+                     "http://127.0.0.1:7890",
+                     "-w", "%{http_code}",
+                     "https://www.google.com/generate_204"])
     data["proxy_7890"] = (rc == 0)
     return data
 
