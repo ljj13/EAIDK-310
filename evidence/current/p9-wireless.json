@@ -1,0 +1,22 @@
+{
+  "phase": "P9",
+  "date": "2026-10-07",
+  "baseline_kernel": "6.18.55-eaidk310-zramfix1",
+  "candidate": "6.18.55-eaidk310-wifi1",
+  "module_identity": {
+    "wifi_silicon": "BCM43455 (chip 0x4345 rev 0x6, factory journal)",
+    "bt_silicon": "BCM4345C5-class",
+    "module_vendor": "Ampak-class combo per factory firmware set",
+    "module_marking": "UNKNOWN"
+  },
+  "live_dts_match": "YES",
+  "baseline_failure": {
+    "wifi_layer": "L3 SDIO enumeration",
+    "wifi_root_cause": "POWER_SEQUENCE (sdio-pwrseq missing post-power-on-delay-ms; CMD5 issued ~13 ms after WL_REG_ON)",
+    "wifi_fix": "post-power-on-delay-ms = <100>",
+    "bt_root_cause": "KERNEL_CONFIG_MISSING (CONFIG_COMMON_CLK_RK808 not set; rk805 lpo clock provider never registers; hci_bcm probe defers forever)",
+    "bt_fix": "CONFIG_COMMON_CLK_RK808=y"
+  },
+  "provenance": "vendor/provenance/cyw43455.md",
+  "status": "BASELINE_COMPLETE_CANDIDATE_BUILDING"
+}

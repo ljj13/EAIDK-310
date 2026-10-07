@@ -1,0 +1,163 @@
+#!/bin/bash
+# eaidk-wireless-health — P9 machine-readable wireless acceptance for EAIDK-310.
+#
+# Run on the board (root for the scan stages).  Default output is
+# KEY=value lines; --json switches to a single JSON object.  Never emits
+# SSIDs, PSKs, or peer names/addresses: scan stages report PASS/FAIL and
+# counts only.
+#
+# Usage: eaidk-wireless-health [--json] [--scan] [--bt-scan] [--coexist]
+set -u
+
+JSON=0
+DO_SCAN=0
+DO_BT_SCAN=0
+DO_COEXIST=0
+for arg in "$@"; do
+    case "$arg" in
+        --json) JSON=1 ;;
+        --scan) DO_SCAN=1 ;;
+        --bt-scan) DO_BT_SCAN=1 ;;
+        --coexist) DO_COEXIST=1 ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
+
+declare -A R
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# --- SDIO enumeration ---------------------------------------------------
+sdio_func=""
+for d in /sys/bus/mmc/devices/mmc*:0001:*; do
+    [ -e "$d" ] || continue
+    case "$(readlink -f "$d")" in */mmc1/*) sdio_func="$d"; break ;; esac
+done
+if [ -n "$sdio_func" ]; then
+    R[SDIO_PRESENT]=PASS
+    R[SDIO_VENDOR]="$(cat "$sdio_func/vendor" 2>/dev/null | tr -d '\n')"
+    R[SDIO_DEVICE]="$(cat "$sdio_func/device" 2>/dev/null | tr -d '\n')"
+    R[SDIO_CLASS]="$(cat "$sdio_func/class" 2>/dev/null | tr -d '\n')"
+    R[SDIO_FUNCTION]="$(basename "$sdio_func")"
+else
+    R[SDIO_PRESENT]=FAIL
+    R[SDIO_VENDOR]=NONE; R[SDIO_DEVICE]=NONE; R[SDIO_CLASS]=NONE; R[SDIO_FUNCTION]=NONE
+fi
+
+# --- driver / firmware ---------------------------------------------------
+if [ -n "$sdio_func" ] && [ -e "$sdio_func/driver" ]; then
+    R[BRCMFMAC_BOUND]=PASS
+else
+    R[BRCMFMAC_BOUND]=FAIL
+fi
+fw_ok=FAIL
+for f in /lib/firmware/brcm/brcmfmac43455-sdio.bin \
+         /lib/firmware/brcm/brcmfmac43455-sdio.txt \
+         /lib/firmware/brcm/brcmfmac43455-sdio.clm_blob; do
+    [ -s "$f" ] || fw_ok=MISSING_"$(basename "$f")"
+done
+[ "$fw_ok" = FAIL ] && fw_ok=PASS
+R[FIRMWARE_OK]="$fw_ok"
+
+# --- wlan / phy / rfkill -------------------------------------------------
+wlan="$(ls /sys/class/net 2>/dev/null | grep -m1 '^wlan' || true)"
+[ -n "$wlan" ] && R[WLAN_PRESENT]="PASS($wlan)" || R[WLAN_PRESENT]=FAIL
+if have iw && [ -n "$wlan" ]; then
+    phy="$(iw dev "$wlan" info 2>/dev/null | awk '/wiphy/ {print $2; exit}')"
+    [ -n "$phy" ] && R[PHY_PRESENT]="PASS(phy$phy)" || R[PHY_PRESENT]=FAIL
+else
+    R[PHY_PRESENT]=FAIL
+fi
+if have rfkill; then
+    if rfkill list wifi 2>/dev/null | grep -q .; then
+        if rfkill list wifi 2>/dev/null | grep -q 'Soft blocked: no'; then
+            R[RFKILL_OK]=PASS
+        else
+            R[RFKILL_OK]=SOFT_BLOCKED
+        fi
+    else
+        R[RFKILL_OK]=NO_ENTRY
+    fi
+else
+    R[RFKILL_OK]=NO_TOOL
+fi
+
+# --- wifi scans ----------------------------------------------------------
+R[WIFI_SCAN_2G]=NOT_RUN
+R[WIFI_SCAN_5G]=NOT_RUN
+if [ "$DO_SCAN" = 1 ] && have iw && [ -n "$wlan" ]; then
+    rfkill unblock wifi >/dev/null 2>&1
+    ip link set "$wlan" up >/dev/null 2>&1
+    n2=0; n5=0
+    scan2="$(timeout 25 iw dev "$wlan" scan 2>/dev/null)"
+    if [ -n "$scan2" ]; then
+        n2="$(printf '%s\n' "$scan2" | grep -c 'freq: 24')"
+        n5="$(printf '%s\n' "$scan2" | grep -cE 'freq: 5(1|2|3|4|5|6|7)[0-9]{2}$')"
+    fi
+    [ "${n2:-0}" -gt 0 ] && R[WIFI_SCAN_2G]="PASS($n2)" || R[WIFI_SCAN_2G]="FAIL(0)"
+    [ "${n5:-0}" -gt 0 ] && R[WIFI_SCAN_5G]="PASS($n5)" || R[WIFI_SCAN_5G]="FAIL(0)"
+fi
+
+# --- bluetooth -----------------------------------------------------------
+hci=""
+for h in /sys/class/bluetooth/hci*; do
+    [ -e "$h" ] && hci="$(basename "$h")" && break
+done
+[ -n "$hci" ] && R[BT_HCI_PRESENT]="PASS($hci)" || R[BT_HCI_PRESENT]=FAIL
+R[BT_POWERED]=NOT_RUN
+if [ -n "$hci" ] && have btmgmt; then
+    info="$(timeout 5 btmgmt info 2>/dev/null)"
+    if printf '%s\n' "$info" | grep -q "Index list with 0 items"; then
+        R[BT_POWERED]=FAIL
+    elif printf '%s\n' "$info" | grep -q "powered on"; then
+        R[BT_POWERED]=PASS
+    else
+        R[BT_POWERED]=PRESENT_OFF
+    fi
+fi
+R[BT_SCAN]=NOT_RUN
+if [ "$DO_BT_SCAN" = 1 ] && [ -n "$hci" ] && have bluetoothctl; then
+    out="$(timeout 20 bluetoothctl --timeout 15 scan on 2>/dev/null)"
+    # count unique discovered device lines without printing them
+    n="$(printf '%s\n' "$out" | grep -c '^\[NEW\] Device' || true)"
+    [ "${n:-0}" -gt 0 ] && R[BT_SCAN]="PASS($n)" || R[BT_SCAN]="FAIL(0)"
+fi
+
+# --- coexistence ---------------------------------------------------------
+R[COEXISTENCE]=NOT_RUN
+if [ "$DO_COEXIST" = 1 ] && [ -n "$wlan" ] && [ -n "$hci" ]; then
+    # concurrent wifi scan while BT scans; both must deliver results
+    ( timeout 25 iw dev "$wlan" scan >/dev/null 2>&1 ) &
+    wpid=$!
+    btout="$(timeout 20 bluetoothctl --timeout 15 scan on 2>/dev/null)"
+    wait $wpid
+    wrc=$?
+    btn="$(printf '%s\n' "$btout" | grep -c '^\[NEW\] Device' || true)"
+    if [ "$wrc" = 0 ] && [ "${btn:-0}" -gt 0 ]; then
+        R[COEXISTENCE]="PASS"
+    else
+        R[COEXISTENCE]="FAIL(w=$wrc,bt=$btn)"
+    fi
+fi
+
+# --- output ---------------------------------------------------------------
+if [ "$JSON" = 1 ]; then
+    printf '{'
+    first=1
+    for k in SDIO_PRESENT SDIO_VENDOR SDIO_DEVICE SDIO_CLASS SDIO_FUNCTION \
+             BRCMFMAC_BOUND FIRMWARE_OK WLAN_PRESENT PHY_PRESENT RFKILL_OK \
+             WIFI_SCAN_2G WIFI_SCAN_5G BT_HCI_PRESENT BT_POWERED BT_SCAN \
+             COEXISTENCE; do
+        [ $first = 0 ] && printf ', '
+        printf '"%s": "%s"' "$k" "${R[$k]}"
+        first=0
+    done
+    printf ' }\n'
+else
+    for k in SDIO_PRESENT SDIO_VENDOR SDIO_DEVICE SDIO_CLASS SDIO_FUNCTION \
+             BRCMFMAC_BOUND FIRMWARE_OK WLAN_PRESENT PHY_PRESENT RFKILL_OK \
+             WIFI_SCAN_2G WIFI_SCAN_5G BT_HCI_PRESENT BT_POWERED BT_SCAN \
+             COEXISTENCE; do
+        printf '%s=%s\n' "$k" "${R[$k]}"
+    done
+fi

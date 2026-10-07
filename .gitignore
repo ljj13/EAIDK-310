@@ -11,3 +11,4 @@ ssh_host_*_key
 .build/
 .cache/
 release-staging/
+logs/
