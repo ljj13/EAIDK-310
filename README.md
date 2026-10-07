@@ -4,16 +4,17 @@
 | --- | --- |
 | Board | OpenAILab EAIDK-310 · Rockchip RK3328 · 1 GiB · HBD08G 8 GiB eMMC |
 | OS | Debian 13 |
-| **Stable kernel** | **6.18.54-eaidk310-zramfix1** (extlinux default) |
-| Previous known-good | 6.12.111-eaidk310-zramfix1 |
+| **Stable kernel** | **6.18.55-eaidk310-zramfix1** (extlinux default) |
+| Previous known-good | 6.18.54-eaidk310-zramfix1 |
 | Rescue | 6.12.108-eaidk310-zramfix1 |
+| Historical | 6.12.111-eaidk310-zramfix1 (source/release archive) |
 | Bootloader | U-Boot 2024.07-rc1 **failsafe-raw** (raw dual-copy bootstate + trial watchdog) |
 | OTA backend | **RAW_REDUNDANT** |
 | Hang recovery | DesignWare hardware watchdog (28.6 s) armed on candidate trials only |
-| Latest release | **v2026.10.06** |
+| Latest release | **v2026.10.07** |
 | Kernel OTA | **PRODUCTION_READY** — remote, unattended |
 
-Latest binaries: [GitHub Release v2026.10.06](https://github.com/ljj13/EAIDK-310/releases/tag/v2026.10.06)
+Latest binaries: [GitHub Release v2026.10.07](https://github.com/ljj13/EAIDK-310/releases/tag/v2026.10.07)
 
 ## OTA flow
 
@@ -125,7 +126,7 @@ in [docs/P7-BUILD-PIPELINE-AUDIT.md](docs/P7-BUILD-PIPELINE-AUDIT.md).
 
 ## Quick start
 
-* Build the current kernel: [kernel/linux-6.18.54-zramfix1/](kernel/linux-6.18.54-zramfix1/)
+* Build the current kernel: [kernel/linux-6.18.55-zramfix1/](kernel/linux-6.18.55-zramfix1/)
 * OTA framework and runbooks: [ota/README.md](ota/README.md)
 * U-Boot failsafe variants and patch stack: [bootloader/u-boot-eaidk310/](bootloader/u-boot-eaidk310/)
 * Recovery models: [docs/emmc-recovery.md](docs/emmc-recovery.md),
@@ -139,7 +140,7 @@ layout ABI are separate high-risk infrastructure: changing them requires
 an independent review, on-site serial access and a written
 backup/recovery procedure (see ota/docs/FLASH-PLAN-P36.md).
 
-## Hardware status (validated on 6.18.54)
+## Hardware status (validated on 6.18.55)
 
 Working: eMMC, Ethernet, USB, RTC (via network time), thermal, cpufreq,
 zram (LZ4), nftables, hardware watchdog, SSH/Tailscale.

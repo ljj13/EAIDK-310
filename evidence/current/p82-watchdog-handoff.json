@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-07",
+  "known_good_61854_feeder_trial": "PASS (WDT armed, feeder ownership, health double-PASS)",
+  "linux_watchdog_handoff": "PASS (feeder holds /dev/watchdog0 fd; fuser evidence)",
+  "normal_stable_feeder_inactive": "PASS",
+  "prearm_feeder_contract": "PASS (8 watchdog-handoff gates in prearm_contract; CASE1-10 in ota/tests/test_watchdog_contract.py)",
+  "trial_feed_binary": "/usr/local/sbin/eaidk-trial-feed",
+  "trial_feed_installed": true,
+  "trial_feed_unit": "eaidk-ota-trial-feed.service (P3.7 production unit, kept; P8.2 duplicate unit removed)",
+  "true_hang": {
+    "automatic_rollback": "PASS (boot2 exceeded bootlimit -> altbootcmd -> 6.18.54)",
+    "candidate": "6.18.55-eaidk310-zramfix1",
+    "feeder_stopped": true,
+    "hardware_wdt_reset": "PASS (serial: reboot: Restarting system after silent hang window)",
+    "method": "eaidk_ota_hang_test=1 injected via install-candidate-hang-test (P3.7 TEST C semantics)",
+    "rollback_target": "6.18.54-eaidk310-zramfix1",
+    "tailscale_after_rollback": "PASS",
+    "watchdog_timeout_seconds": 28.6
+  },
+  "uboot_watchdog_started": "PASS (WDT: Started watchdog@ff1a0000, 30s/TOP15)",
+  "userspace_feeder_active": "PASS (systemctl is-active eaidk-ota-trial-feed = active)"
+}

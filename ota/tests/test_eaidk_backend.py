@@ -62,7 +62,8 @@ class BackendFixtureTests(unittest.TestCase):
         self.wsl(f"printf '#!/bin/sh\\necho stub\\n' > {feeder} && "
                  f"chmod +x {feeder} && "
                  f"printf '[Unit]\\nConditionKernelCommandLine="
-                 f"eaidk_ota_trial\\n\\n[Service]\\nExecStart={feeder}\\n' "
+                 f"eaidk_ota_trial\\n\\n[Service]\\n"
+                 f"ExecStart=/usr/local/sbin/eaidk-trial-feed\\n' "
                  f"> {unit} && touch {self.work}/wd/watchdog0")
         self.tool_args = (f"--state-dir {self.work}/state --boot-dir {self.boot} "
                           f"--config-dir {self.work}/config --run-dir {self.work}/run "

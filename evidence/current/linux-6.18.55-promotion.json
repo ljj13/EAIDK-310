@@ -1,0 +1,31 @@
+{
+  "bundle_sha256": "869c410a08484fd8337ad7a5fa214d54ef807f4fd270a9f18c592397d0c43eea",
+  "candidate_1": {
+    "cause": "OTA_INFRASTRUCTURE_MISCONFIGURATION (STALE_TRIAL_CONF_ROOT_UUID)",
+    "kernel_regression": "NONE",
+    "trial": "INVALID"
+  },
+  "date": "2026-10-07",
+  "final_trial": {
+    "boot": "6.18.55-eaidk310-zramfix1",
+    "commit": "PASS (state COMMITTED, bootcount=0, upgrade_available=0)",
+    "health": "CRITICAL PASS + REMOTE PASS"
+  },
+  "known_good_feeder_trial": "PASS",
+  "promotion": {
+    "extlinux_default": "rockchip-kernel-6.18.55-eaidk310-zramfix1",
+    "final_normal_boot": "PASS (no trial marker, feeder inactive, WDT idle, failed units 0, zram lz4, tailscale OK)",
+    "hardware": {
+      "cpu_temp_c": 48.6,
+      "mem_free_mb": 568,
+      "modules": "OK",
+      "nftables": "OK",
+      "zram": "lz4"
+    },
+    "previous_known_good": "6.18.54-eaidk310-zramfix1",
+    "rescue": "6.12.108-eaidk310-zramfix1"
+  },
+  "released_as": "v2026.10.07",
+  "source": "P7 release pipeline, deterministic rebuild (cold==warm), upstream 6.18.55 + board patch, config oracle 0 functional deltas",
+  "true_hang_rollback": "PASS"
+}

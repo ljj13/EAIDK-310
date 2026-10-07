@@ -1198,9 +1198,8 @@ def prearm_contract(boot_dir: pathlib.Path, state_dir: pathlib.Path,
     unit_text = unit_path.read_text(encoding="utf-8") if unit_path.is_file() else ""
     add("trial_feed_unit_present", unit_path.is_file())
     add("trial_feed_unit_valid",
-        "ConditionKernelCommandLine=eaidk_ota_trial" in unit_text
-        and "ExecStart=" in unit_text,
-        "unit must gate on the trial cmdline marker and run the feeder")
+        "ExecStart=" in unit_text and TRIAL_FEED_BIN in unit_text,
+        "unit must run the feeder binary (its own policy decides when)")
     wd_dev = pathlib.Path(watchdog_dev or "/dev/watchdog0")
     add("watchdog_device_present", wd_dev.exists(), str(wd_dev))
     add("kernel_watchdog_handoff_supported",
@@ -1375,6 +1374,11 @@ def cmd_install_candidate(args) -> int:
                              f"{dst} exists with different content; refusing")
     installed = {}
     for src, dst in targets.items():
+        if dst.exists() and sha256_file(dst) == sha256_file(src):
+            # identical content already deployed: skip the copy so an
+            # idempotent re-install needs no transient /boot space
+            installed[str(dst)] = sha256_file(src) + " (unchanged)"
+            continue
         _atomic_copy(src, dst)
         if sha256_file(dst) != sha256_file(src):
             return fail_exit(EXIT_ERROR, f"post-install hash mismatch: {dst}")
@@ -1682,6 +1686,17 @@ def cmd_health(args) -> int:
         return EXIT_HEALTH_CRITICAL
     if not remote_pass:
         return EXIT_HEALTH_REMOTE
+    # P8.2: a passing health run on the candidate kernel is the
+    # ARMED -> HEALTHY transition the commit path requires.
+    state = StateStore(pathlib.Path(args.state_dir))
+    data = state.read()
+    release = data.get("release")
+    if data.get("state") == "ARMED" and release and             release in pathlib.Path("/proc/cmdline").read_text():
+        state.write("HEALTHY", release=release,
+                    bundle_sha256=data.get("bundle_sha256"),
+                    candidate_identity=data.get("candidate_identity"),
+                    note="health PASS on the candidate kernel")
+        print(f"state: ARMED -> HEALTHY ({release})")
     return EXIT_OK
 
 
