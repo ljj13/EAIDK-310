@@ -101,7 +101,7 @@
       "source_path": "kernel/linux-6.18.54-zramfix1/dts/rk3328-eaidk-310.dts",
       "method": "repo-canonical",
       "role": "production",
-      "sha256": "72284e86e6c2aad30c41b2003be9a343055d6c8f863519ed5e9d0442301deff9"
+      "sha256": "a45c1467ca84ddff55946958664c77143a93b99a2aab1aa4635bc795daeb4bc5"
     }
   ]
 }

@@ -413,7 +413,9 @@
 	non-removable;
 	pinctrl-names = "default";
 	pinctrl-0 = <&sdmmc1_bus4 &sdmmc1_cmd &sdmmc1_clk>;
-	sd-uhs-sdr104;
+	/* P9 wifi2 (TEST B): the module's 1.8V-switch path never completes
+	 * the CMD11 handshake and the S18R request appears to suppress even
+	 * the CMD5 response; enumerate without UHS caps (<= 50 MHz). */
 	status = "okay";
 
 	wifi@1 {
