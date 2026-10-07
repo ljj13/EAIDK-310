@@ -1,0 +1,28 @@
+IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+ -1 1474584ad6a541a39a48e1ad177a283f Thu 2026-10-08 03:48:25 CST Thu 2026-10-08 03:51:36 CST
+  0 2774348033844be19e7d615093cfa9e3 Thu 2026-10-08 03:51:56 CST Thu 2026-10-08 03:53:16 CST
+===
+previous_boot:
+  previous_boot_end: None
+  reboot_evidence:
+    - 2026-10-08T03:51:36+08:00 eaidk-310 systemd[1]: Finished systemd-reboot.service - System Reboot.
+    - 2026-10-08T03:51:36+08:00 eaidk-310 systemd[1]: Reached target reboot.target - System Reboot.
+    - 2026-10-08T03:51:36+08:00 eaidk-310 systemd[1]: Shutting down.
+===BLAME
+28.800s shellcrash.service
+ 4.554s systemd-random-seed.service
+ 3.706s dev-mmcblk2p2.device
+ 2.947s exim4.service
+ 2.172s tailscaled.service
+ 1.959s systemd-udev-trigger.service
+ 1.882s networking.service
+ 1.671s dev-zram0.device
+===WHO_WANTS_NETWORK_ONLINE
+network-online.target
+  exim4.service
+===RANDSEED
+ 4.554s systemd-random-seed.service
+ 1.959s systemd-udev-trigger.service
+  534ms systemd-remount-fs.service
+  453ms systemd-fsck-root.service
+  259ms systemd-fsck@dev-disk-by\x2duuid-cbdb447a\x2d125d\x2d4d30\x2dbc3d\x2d07807a1f4578.service

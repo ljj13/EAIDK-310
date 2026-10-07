@@ -1,0 +1,38 @@
+Startup finished in 5.181s (kernel) + 26.619s (userspace) = 31.800s 
+multi-user.target reached after 26.614s in userspace.
+17.670s shellcrash.service
+ 4.401s systemd-random-seed.service
+ 3.660s dev-mmcblk2p2.device
+ 2.995s exim4.service
+ 2.091s dev-zram0.device
+ 1.933s systemd-udev-trigger.service
+ 1.877s tailscaled.service
+ 1.554s networking.service
+ 1.513s lm-sensors.service
+ 1.265s dbus.service
+ 1.201s ssh.service
+ 1.148s systemd-journald.service
+The time when unit became active or started is printed after the "@" character.
+The time the unit took to start is printed after the "+" character.
+
+multi-user.target @26.614s
+└─shellcrash.service @8.935s +17.670s
+  └─network.target @8.866s
+    └─wpa_supplicant.service @8.563s +298ms
+      └─dbus.service @7.179s +1.265s
+        └─basic.target @7.142s
+          └─sockets.target @7.140s
+            └─triggerhappy.socket @7.139s
+              └─sysinit.target @7.091s
+                └─systemd-timesyncd.service @15.433s +306ms
+                  └─systemd-remount-fs.service @3.527s +377ms
+                    └─systemd-fsck-root.service @2.764s +675ms
+                      └─systemd-journald.socket @2.419s
+                        └─-.mount @2.295s
+                          └─-.slice @2.294s
+previous_boot:
+  previous_boot_end: Thu 2026-10-08 03:48:25 CST Thu 2026-10-08 03:49:24 CST
+  reboot_evidence: None
+  previous_kernel: None
+  journal_readable: True
+ota:

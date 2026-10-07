@@ -80,3 +80,51 @@ Write-amplification audit before/after policy (KiB):
   hog): Phase 5 pending.
 - extlinux / kernel cmdline / DTS: frozen outside the P7→P8 candidate
   pipeline.
+
+## Memory / zram (Phase 4)
+
+Six-configuration pressure matrix (700 MB anonymous load with a 120 MB
+`MemAvailable` guard, evidence `evidence/p10-zram/`): all candidate
+policies — 384 M vs 512 M, lz4 vs lzo-rle, swappiness 60 vs 100 — swap
+under 4 MiB, stay within CPU noise, keep a 112–139 MB available floor
+and never approach OOM.  zstd is not registered by this kernel's zram
+(runtime listing: lzo, lzo-rle, lz4; writing `zstd` fails EINVAL).
+
+ZRAM: NO_CHANGE_NEEDED — 384 MiB lz4, swappiness 60 stays (also the
+configuration the OTA health gate asserts).
+
+Kernel quirk worth remembering: on 6.18.55 the per-device zram
+accounting (`/sys/block/zram0/mm_stat`, `zramctl`) under-reports while
+`/proc/meminfo` SwapFree and `/proc/swaps` are authoritative.
+
+## Boot performance (Phase 5)
+
+Measured with `systemd-analyze` across three real reboots per
+configuration (boot-to-boot variance ≈ 0.5 s):
+
+| metric                    | before | after |
+|---------------------------|-------:|------:|
+| kernel                    |  5.18s | 5.16s |
+| userspace → multi-user    | 26.61s | 9.62s |
+| total to multi-user       | 31.80s | 14.78s |
+| sshd listening (journal Δ)|   ~12s |  ~12s |
+
+Changes (both via drop-ins, ships in `tools/apply-p10-runtime-policy.sh`):
+
+- `shellcrash.service.d/99-p10-async.conf`: `After=multi-user.target`.
+  bfstart.sh (~17 s: /tmp rebuild, provider re-download, node URL
+  tests) left the boot-critical path; the local proxy is a
+  late-starting service, its consumers tolerate that.  Verified
+  listening on 7890 after every reboot.
+- `exim4.service.d/99-p10-async.conf`: same ordering.  The MTA pulled
+  `network-online.target` (DHCP wait) onto the critical chain.
+
+Tailscaled deliberately stays on the critical path (remote-access
+lifeline).  `systemd-random-seed` at 4.5 s is early-boot eMMC
+contention; not worth touching for reliability reasons.
+
+Journal persistence verified across three real reboots: `--list-boots`
+keeps previous boots and the shutdown sequence ("Finished
+systemd-reboot.service") is captured as reboot evidence.  Note: the
+Storage= switch only takes effect on a full reboot, not on
+`systemctl restart systemd-journald`.

@@ -58,4 +58,25 @@ echo "== 5. TRIM now (weekly fstrim.timer must stay enabled)"
 systemctl is-enabled fstrim.timer >/dev/null || systemctl enable fstrim.timer
 fstrim -av || true
 
+echo "== 6. boot latency: slow services off the multi-user critical path"
+# bfstart.sh (~17s: /tmp rebuild + node URL tests) and the MTA (which drags
+# in the network-online DHCP wait) must not gate boot.  Tailscaled stays on
+# the critical path on purpose: it is the remote-access lifeline.
+install -d /etc/systemd/system/shellcrash.service.d
+cat > /etc/systemd/system/shellcrash.service.d/99-p10-async.conf <<'EOF'
+# P10 boot latency (docs/P10-RUNTIME-POLICY.md): bfstart.sh spends ~17s
+# rebuilding /tmp config and URL-testing nodes.  That must not gate
+# multi-user.target; consumers of the local proxy tolerate a late start.
+[Unit]
+After=multi-user.target
+EOF
+install -d /etc/systemd/system/exim4.service.d
+cat > /etc/systemd/system/exim4.service.d/99-p10-async.conf <<'EOF'
+# P10 boot latency: the MTA (plus its network-online wait) must not gate
+# multi-user.target; mail queues and its queue runners tolerate a late start.
+[Unit]
+After=multi-user.target
+EOF
+systemctl daemon-reload
+
 echo "P10_RUNTIME_POLICY=APPLIED"
