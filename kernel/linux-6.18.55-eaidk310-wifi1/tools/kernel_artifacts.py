@@ -150,7 +150,7 @@ KERNEL_RELEASE = "6.18.55-eaidk310-wifi1"
 BUNDLE_REQUIRED_FILES = {
     f"boot/Image-{KERNEL_RELEASE}",
     f"boot/uInitrd-{KERNEL_RELEASE}",
-    "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb",
+    "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb",
     f"root/lib/modules/{KERNEL_RELEASE}/modules.dep",
     f"root/lib/modules/{KERNEL_RELEASE}/modules.builtin",
     f"root/lib/modules/{KERNEL_RELEASE}/modules.order",
@@ -560,7 +560,7 @@ def render_extlinux(append_line: str) -> str:
     return (
         "    label rockchip-kernel-6.18.55-eaidk310-wifi1-test\n"
         "    LINUX  /Image-6.18.55-eaidk310-wifi1\n"
-        "    FDT    /dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb\n"
+        "    FDT    /dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb\n"
         "    INITRD /uInitrd-6.18.55-eaidk310-wifi1\n"
         f"    APPEND {append_line}\n"
     )
@@ -619,7 +619,7 @@ def verify_extlinux_deployment(
     test_label = "rockchip-kernel-6.18.55-eaidk310-wifi1-test"
     expected_test_entry = {
         "linux": "/Image-6.18.55-eaidk310-wifi1",
-        "fdt": "/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb",
+        "fdt": "/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb",
         "initrd": "/uInitrd-6.18.55-eaidk310-wifi1",
     }
     if entries.get(test_label) != expected_test_entry:

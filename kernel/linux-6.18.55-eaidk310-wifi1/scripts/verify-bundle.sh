@@ -50,7 +50,7 @@ special_paths="$(find "$BUNDLE_ROOT" \( -type b -o -type c -o -type p -o -type s
 [[ -z "$special_paths" ]] || fail "bundle contains special files or symlinks: $special_paths"
 
 image="$BUNDLE_ROOT/boot/Image-$EXPECTED_RELEASE"
-dtb="$BUNDLE_ROOT/boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb"
+dtb="$BUNDLE_ROOT/boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb"
 uinitrd="$BUNDLE_ROOT/boot/uInitrd-$EXPECTED_RELEASE"
 file "$image" | grep -Eq 'ARM64|ARM aarch64' || fail "bundle Image is not ARM64"
 [[ "$(fdtget -t s "$dtb" / model)" == "EAIDK-310 build by lcy v2" ]] || \
@@ -59,7 +59,7 @@ fdtget -t s "$dtb" / compatible | grep -Fqw 'openailab,eaidk-310' || \
 	fail "bundle DTB compatible mismatch"
 
 uimage_info="$(dumpimage -l "$uinitrd")"
-grep -Fq 'Image Name:   initramfs-6.18.55-zramfix1' <<<"$uimage_info" || \
+grep -Fq 'Image Name:   initramfs-6.18.55-wifi1' <<<"$uimage_info" || \
 	fail "uInitrd name mismatch"
 grep -Fq 'Image Type:   AArch64 Linux RAMDisk Image (uncompressed)' <<<"$uimage_info" || \
 	fail "uInitrd type mismatch"

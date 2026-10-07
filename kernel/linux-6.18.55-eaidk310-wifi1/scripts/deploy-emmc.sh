@@ -151,7 +151,7 @@ done
 
 SOURCE_IMAGE="$BUNDLE_ROOT/boot/Image-$RELEASE"
 SOURCE_UINITRD="$BUNDLE_ROOT/boot/uInitrd-$RELEASE"
-SOURCE_DTB="$BUNDLE_ROOT/boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb"
+SOURCE_DTB="$BUNDLE_ROOT/boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb"
 SOURCE_MODULES="$BUNDLE_ROOT/root/lib/modules/$RELEASE"
 for source in "$SOURCE_IMAGE" "$SOURCE_UINITRD" "$SOURCE_DTB" "$SOURCE_MODULES/modules.dep"; do
 	[[ -f "$source" && ! -L "$source" ]] || fail "bundle source is missing or unsafe: $source"

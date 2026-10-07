@@ -2,7 +2,7 @@
 set -euo pipefail
 
 EXPECTED_RELEASE="6.18.55-eaidk310-wifi1"
-UIMAGE_NAME="initramfs-6.18.55-zramfix1"
+UIMAGE_NAME="initramfs-6.18.55-wifi1"
 DEFAULT_WSL_ROOT="/home/Fog/eaidk310-kernel"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"

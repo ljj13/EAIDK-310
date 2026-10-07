@@ -47,7 +47,7 @@ printf 'write=%s\n' "$([[ "$DRY_RUN" == 1 ]] && printf false || printf true)"
 printf '%s\n' \
 	"target=boot/Image-$EXPECTED_RELEASE" \
 	"target=boot/uInitrd-$EXPECTED_RELEASE" \
-	"target=boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb" \
+	"target=boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb" \
 	"target=root/lib/modules/$EXPECTED_RELEASE/"
 ((DRY_RUN)) && exit 0
 
@@ -73,7 +73,7 @@ mkdir -p -- \
 install -m 0644 "$IMAGE" "$BUNDLE_ROOT/boot/Image-$EXPECTED_RELEASE"
 install -m 0644 "$UINITRD" "$BUNDLE_ROOT/boot/uInitrd-$EXPECTED_RELEASE"
 install -m 0644 "$DTB" \
-	"$BUNDLE_ROOT/boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb"
+	"$BUNDLE_ROOT/boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb"
 rsync -a --delete --exclude build --exclude source \
 	"$MODULE_DIR/" "$BUNDLE_ROOT/root/lib/modules/$EXPECTED_RELEASE/"
 

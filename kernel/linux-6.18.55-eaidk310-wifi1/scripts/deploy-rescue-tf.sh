@@ -181,18 +181,18 @@ for directory in "$MODULES_ROOT" "$BOOT_ROOT" "$BOOT_ROOT/dtb/rockchip" "$BOOT_R
 done
 if find "$MODULES_ROOT" -maxdepth 1 -name ".$RELEASE.*.tmp" -print -quit | grep -q . || \
 	find "$BOOT_ROOT" -maxdepth 1 \( -name ".Image-$RELEASE.*.tmp" -o -name ".uInitrd-$RELEASE.*.tmp" \) -print -quit | grep -q . || \
-	find "$BOOT_ROOT/dtb/rockchip" -maxdepth 1 -name '.rk3328-eaidk-310-6.18.55.dtb.*.tmp' -print -quit | grep -q . || \
+	find "$BOOT_ROOT/dtb/rockchip" -maxdepth 1 -name '.rk3328-eaidk-310-6.18.55-wifi1.dtb.*.tmp' -print -quit | grep -q . || \
 	find "$BOOT_ROOT/extlinux" -maxdepth 1 -name '.extlinux.conf.*.tmp' -print -quit | grep -q .; then
 	fail "interrupted deployment temporary path is present"
 fi
 
 SOURCE_IMAGE="$BUNDLE_ROOT/boot/Image-$RELEASE"
 SOURCE_UINITRD="$BUNDLE_ROOT/boot/uInitrd-$RELEASE"
-SOURCE_DTB="$BUNDLE_ROOT/boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb"
+SOURCE_DTB="$BUNDLE_ROOT/boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb"
 SOURCE_MODULES="$BUNDLE_ROOT/root/lib/modules/$RELEASE"
 DEST_IMAGE="$BOOT_ROOT/Image-$RELEASE"
 DEST_UINITRD="$BOOT_ROOT/uInitrd-$RELEASE"
-DEST_DTB="$BOOT_ROOT/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb"
+DEST_DTB="$BOOT_ROOT/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb"
 DEST_MODULES="$MODULES_ROOT/$RELEASE"
 for source in "$SOURCE_IMAGE" "$SOURCE_UINITRD" "$SOURCE_DTB" "$SOURCE_MODULES/modules.dep"; do
 	[[ -f "$source" ]] || fail "bundle source is missing: $source"
@@ -225,7 +225,7 @@ if ! python3 "$HELPER" verify-extlinux-deployment \
 	--expected-default "$EXPECTED_DEFAULT" \
 	--planned-reference "/Image-$RELEASE=$SOURCE_IMAGE" \
 	--planned-reference "/uInitrd-$RELEASE=$SOURCE_UINITRD" \
-	--planned-reference "/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb=$SOURCE_DTB" \
+	--planned-reference "/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb=$SOURCE_DTB" \
 	> "$SCRATCH/extlinux-gate.json"; then
 	fail "candidate extlinux verification failed"
 fi
@@ -296,7 +296,7 @@ for line in pathlib.Path(os.environ["DEPLOY_BASELINE_LOCK"]).read_text(
 source_hashes = {
     "Image-6.18.55-eaidk310-wifi1": sha256(os.environ["DEPLOY_SOURCE_IMAGE"]),
     "uInitrd-6.18.55-eaidk310-wifi1": sha256(os.environ["DEPLOY_SOURCE_UINITRD"]),
-    "dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb": sha256(
+    "dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb": sha256(
         os.environ["DEPLOY_SOURCE_DTB"]
     ),
 }
@@ -307,7 +307,7 @@ if is_apply:
     versioned_after = {
         "Image-6.18.55-eaidk310-wifi1": sha256(os.environ["DEPLOY_DEST_IMAGE"]),
         "uInitrd-6.18.55-eaidk310-wifi1": sha256(os.environ["DEPLOY_DEST_UINITRD"]),
-        "dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb": sha256(
+        "dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb": sha256(
             os.environ["DEPLOY_DEST_DTB"]
         ),
     }
@@ -336,7 +336,7 @@ report = {
     "planned_destinations": [
         "/boot/Image-6.18.55-eaidk310-wifi1",
         "/boot/uInitrd-6.18.55-eaidk310-wifi1",
-        "/boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb",
+        "/boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb",
         "/lib/modules/6.18.55-eaidk310-wifi1",
         "/boot/extlinux/extlinux.conf",
     ],

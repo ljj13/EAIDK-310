@@ -132,7 +132,7 @@ esac
         files = {
             f"boot/Image-{RELEASE}": b"new arm64 image\n",
             f"boot/uInitrd-{RELEASE}": b"new arm64 initrd\n",
-            "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb": b"new dtb\n",
+            "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb": b"new dtb\n",
             f"root/lib/modules/{RELEASE}/modules.dep": b"kernel/test.ko:\n",
             f"root/lib/modules/{RELEASE}/modules.builtin": b"",
             f"root/lib/modules/{RELEASE}/modules.order": b"kernel/test.ko\n",
@@ -140,7 +140,7 @@ esac
             "deploy/extlinux-entry.conf": (
                 "    label rockchip-kernel-6.18.55-eaidk310-wifi1-test\n"
                 "    LINUX  /Image-6.18.55-eaidk310-wifi1\n"
-                "    FDT    /dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb\n"
+                "    FDT    /dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb\n"
                 "    INITRD /uInitrd-6.18.55-eaidk310-wifi1\n"
                 "    APPEND root=UUID=fixture rootwait\n"
             ).encode(),
@@ -375,11 +375,11 @@ esac
         )
         self.assertEqual(
             report["versioned_after_sha256"][
-                "dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb"
+                "dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb"
             ],
             self.sha256(
                 self.target
-                / "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb"
+                / "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb"
             ),
         )
         self.assertEqual(
@@ -523,7 +523,7 @@ esac
         )
         self.assertEqual(
             (self.target / "boot/dtb/rockchip/rk3328-eaidk-310.dtb").read_bytes(),
-            (self.bundle / "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb").read_bytes(),
+            (self.bundle / "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb").read_bytes(),
         )
         self.assertEqual(
             (self.target / f"lib/modules/{RELEASE}/kernel/test.ko").read_bytes(),
@@ -785,7 +785,7 @@ class ScriptContractTests(unittest.TestCase):
     def test_uinitrd_metadata_name_fits_the_legacy_uimage_header(self):
         build_script = (SCRIPTS / "build-initramfs-arm64.sh").read_text(encoding="utf-8")
         verify_script = (SCRIPTS / "verify-bundle.sh").read_text(encoding="utf-8")
-        expected_name = "initramfs-6.18.55-zramfix1"
+        expected_name = "initramfs-6.18.55-wifi1"
 
         self.assertLessEqual(len(expected_name.encode("ascii")), 32)
         self.assertIn(f'UIMAGE_NAME="{expected_name}"', build_script)
@@ -820,7 +820,7 @@ class ScriptContractTests(unittest.TestCase):
             {
                 "boot/Image-6.18.55-eaidk310-wifi1",
                 "boot/uInitrd-6.18.55-eaidk310-wifi1",
-                "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb",
+                "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb",
                 "root/lib/modules/6.18.55-eaidk310-wifi1/",
             },
         )

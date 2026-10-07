@@ -56,7 +56,7 @@ class KernelArtifactCliTests(unittest.TestCase):
         files = {
             "boot/Image-6.18.55-eaidk310-wifi1": b"arm64 image\n",
             "boot/uInitrd-6.18.55-eaidk310-wifi1": b"uboot initrd\n",
-            "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb": b"dtb\n",
+            "boot/dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb": b"dtb\n",
             "root/lib/modules/6.18.55-eaidk310-wifi1/modules.dep": b"kernel/test.ko:\n",
             "root/lib/modules/6.18.55-eaidk310-wifi1/modules.builtin": b"kernel/builtin.ko\n",
             "root/lib/modules/6.18.55-eaidk310-wifi1/modules.order": b"kernel/test.ko\n",
@@ -112,7 +112,7 @@ class KernelArtifactCliTests(unittest.TestCase):
                 output.read_text(encoding="utf-8"),
                 "    label rockchip-kernel-6.18.55-eaidk310-wifi1-test\n"
                 "    LINUX  /Image-6.18.55-eaidk310-wifi1\n"
-                "    FDT    /dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb\n"
+                "    FDT    /dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb\n"
                 "    INITRD /uInitrd-6.18.55-eaidk310-wifi1\n"
                 f"    APPEND {append_line}\n",
             )
@@ -249,7 +249,7 @@ class KernelArtifactCliTests(unittest.TestCase):
                 "dtb/rockchip/rk3328-eaidk-310.dtb",
                 "Image-6.18.55-eaidk310-wifi1",
                 "uInitrd-6.18.55-eaidk310-wifi1",
-                "dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb",
+                "dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb",
             ):
                 path = boot.joinpath(*relative_path.split("/"))
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,7 +263,7 @@ class KernelArtifactCliTests(unittest.TestCase):
                 "  initrd /uInitrd\n"
                 "label rockchip-kernel-6.18.55-eaidk310-wifi1-test\n"
                 "  linux /Image-6.18.55-eaidk310-wifi1\n"
-                "  fdt /dtb/rockchip/rk3328-eaidk-310-6.18.55.dtb\n"
+                "  fdt /dtb/rockchip/rk3328-eaidk-310-6.18.55-wifi1.dtb\n"
                 "  initrd /uInitrd-6.18.55-eaidk310-wifi1\n",
                 encoding="utf-8",
             )
