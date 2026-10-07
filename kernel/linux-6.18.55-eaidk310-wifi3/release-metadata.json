@@ -1,0 +1,29 @@
+{
+  "kernel_version": "6.18.55",
+  "kernel_release": "6.18.55-eaidk310-wifi3",
+  "board_dtb": "rk3328-eaidk-310.dtb",
+  "bundle_dtb_name": "rk3328-eaidk-310-6.18.55-wifi3.dtb",
+  "bundle_name": "eaidk310-linux-6.18.55-eaidk310-wifi3",
+  "append_line": "root=UUID=bd2a6dbf-c55f-4d5e-8738-797e581ee7c9 rootwait rootfstype=ext4 net.ifnames=0 earlycon console=ttyS2,1500000n8 console=tty1 consoleblank=0 loglevel=4",
+  "uimage_name": "initramfs-6.18.55-wifi3",
+  "initramfs_source_date_epoch": 1788352262,
+  "initramfs": {
+    "suite": "trixie",
+    "arch": "arm64",
+    "variant": "minbase",
+    "packages": [
+      "initramfs-tools-core",
+      "kmod",
+      "busybox",
+      "zstd"
+    ],
+    "mirror": "https://deb.debian.org/debian",
+    "security_mirror": "https://security.debian.org/debian-security"
+  },
+  "stable_baseline": [
+    "e90c1a5fc340ba605a5edee81315df21369dcb9d82c5af1c9973a1754181010e  boot/Image",
+    "a9278654cd7edb07b52fe6796a0a116067d10b6a16af4de6a48e0716b0461cf9  boot/uInitrd",
+    "bb3824bc0d07af301413fc2071f76ad4a196da4807ee79c51a6563a480fca614  boot/dtb/rockchip/rk3328-eaidk-310.dtb",
+    "e461f108e2eaa1aec71762b1c59e662cc358896eff3671a622db93a49963209a  boot/extlinux/extlinux.conf"
+  ]
+}
