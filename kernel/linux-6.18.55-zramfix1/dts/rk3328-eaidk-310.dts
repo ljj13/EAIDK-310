@@ -402,7 +402,9 @@
 &sdio {
 	#address-cells = <1>;
 	#size-cells = <0>;
-	bus-width = <4>;
+	/* P9 wifi3: F1 backplane reads return 0xffffffff in 4-bit mode
+	 * (CIS via CMD52 works) - try the D0-only data path. */
+	bus-width = <1>;
 	cap-sd-highspeed;
 	cap-sdio-irq;
 	keep-power-in-suspend;
