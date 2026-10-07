@@ -1,0 +1,80 @@
+==USB
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 003 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 004 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 004 Device 002: ID 05e3:0608 Genesys Logic, Inc. Hub
+Bus 005 Device 001: ID 1d6b:0001 Linux Foundation 1.1 root hub
+/sys/bus/usb/devices/4-1/speed=480
+/sys/bus/usb/devices/usb1/speed=480
+/sys/bus/usb/devices/usb2/speed=5000
+/sys/bus/usb/devices/usb3/speed=480
+/sys/bus/usb/devices/usb4/speed=480
+/sys/bus/usb/devices/usb5/speed=12
+==DRM
+/sys/class/drm/card0-HDMI-A-1/status=disconnected
+==AUDIO
+ 0 [HDMI           ]: simple-card - HDMI
+                      HDMI
+**** List of PLAYBACK Hardware Devices ****
+card 0: HDMI [HDMI], device 0: ff000000.i2s-i2s-hifi i2s-hifi-0 [ff000000.i2s-i2s-hifi i2s-hifi-0]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+==MMC
+mmc0
+mmc1
+mmc2
+/sys/class/mmc_host/mmc0: device
+power
+subsystem
+uevent
+/sys/class/mmc_host/mmc1: device
+mmc1:0001
+power
+subsystem
+uevent
+/sys/class/mmc_host/mmc2: device
+mmc2:0001
+power
+subsystem
+uevent
+==GPIO
+gpiochip0: 32 GPIOs, parent: platform/ff210000.gpio, gpio0:
+ gpio-2   (                    |vcc-host-5v-regulato) out lo ACTIVE LOW
+ gpio-30  (                    |sdmmc-regulator     ) out hi ACTIVE LOW
+
+gpiochip1: 32 GPIOs, parent: platform/ff220000.gpio, gpio1:
+/dev/gpiochip0
+/dev/gpiochip1
+/dev/gpiochip2
+/dev/gpiochip3
+/dev/gpiochip4
+/dev/gpiochip5
+==I2C
+/dev/i2c-1
+/dev/i2c-4
+i2c-1	i2c       	rk3x-i2c                        	I2C adapter
+i2c-4	i2c       	DesignWare HDMI                 	I2C adapter
+==SPI
+==UART
+/dev/ttyS1
+/dev/ttyS2
+/dev/ttyS3
+/dev/ttyS4
+/dev/ttyS5
+/dev/ttyS6
+/dev/ttyS7
+==PWM
+==IIO
+==LED
+/sys/class/leds/*: 
+==RTC
+/dev/rtc
+/dev/rtc0
+rk808-rtc rk808-rtc.4.auto
+epoch=1791405043
+==WATCHDOG
+/dev/watchdog
+/dev/watchdog0
+==DVFS_DEVFREQ
+ff300000.gpu

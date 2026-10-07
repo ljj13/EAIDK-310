@@ -1,0 +1,17 @@
+[Unit]
+Description=EAIDK-310 ST7789 status display
+Documentation=file:///usr/share/doc/eaidk310/P10-RUNTIME-POLICY.md
+# Only meaningful once the panel hardware is attached; the unit stays
+# inactive (condition-skipped) on displayless boards.
+ConditionPathExists=/dev/fb1
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/st7789-statusd.py --device /dev/fb1 --wait --interval 5
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
