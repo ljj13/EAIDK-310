@@ -603,9 +603,12 @@ def verify_bundle(archive: pathlib.Path, expect_release: str = None,
           and b"rockchip,rk3328" in dtb_bytes, "model/compatible markers missing")
 
     # 8 kernel release consistency across manifest paths
-    releases = {re.search(r"-(\d+\.\d+\.\d+-eaidk310-zramfix1)(?:\.|$)", f["path"]).group(1)
+    # P9: the variant suffix is release-specific (zramfix1, wifi1, ...);
+    # the identity pattern is "<version>-eaidk310-<variant>".
+    release_re = r"-(\d+\.\d+\.\d+-eaidk310-[a-z0-9]+)(?:\.|$)"
+    releases = {re.search(release_re, f["path"]).group(1)
                 for f in files
-                if re.search(r"-(\d+\.\d+\.\d+-eaidk310-zramfix1)(?:\.|$)", f["path"])}
+                if re.search(release_re, f["path"])}
     check("release_consistent", len(releases) == 1, f"saw {sorted(releases)}")
     release = releases.pop() if len(releases) == 1 else None
     if expect_release:
@@ -700,7 +703,7 @@ def cmd_inspect(args) -> int:
                "total_bytes": sum(f["size"] for f in files),
                "top": bundle.top,
                "release_hint": sorted({mm.split("-")[0] for mm in members
-                                       if "zramfix1" in mm})[:3]}
+                                       if "eaidk310-" in mm})[:3]}
     print(json.dumps(payload, indent=2, sort_keys=True))
     return EXIT_OK
 
