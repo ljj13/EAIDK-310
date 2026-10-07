@@ -1,0 +1,82 @@
+{
+  "collected_at": "2026-10-07T19:06:59Z",
+  "identity": {
+    "hostname": "eaidk-310",
+    "kernel": "6.18.55-eaidk310-wifi3",
+    "arch": "aarch64",
+    "uptime_seconds": 2861.1,
+    "loadavg_1_5_15": [
+      0.49,
+      0.1,
+      0.03
+    ],
+    "boot_id": "442b2f65-a857-4a1e-8d5f-3bd76e10e37d"
+  },
+  "timing": {
+    "firmware_s": null,
+    "analyze": {
+      "kernel_s": 5.163,
+      "initrd_s": null,
+      "userspace_s": 26.381,
+      "total_s": 31.544
+    },
+    "multi_user_s": null,
+    "userspace_detail": [
+      "The time when unit became active or started is printed after the \"@\" character.",
+      "The time the unit took to start is printed after the \"+\" character.",
+      "",
+      "multi-user.target @26.379s",
+      "\u2514\u2500shellcrash.service @8.957s +17.413s",
+      "  \u2514\u2500network.target @8.863s",
+      "    \u2514\u2500wpa_supplicant.service @8.582s +270ms",
+      "      \u2514\u2500dbus.service @7.399s +1.062s",
+      "        \u2514\u2500basic.target @7.360s",
+      "          \u2514\u2500sockets.target @7.356s",
+      "            \u2514\u2500triggerhappy.socket @7.355s",
+      "              \u2514\u2500sysinit.target @7.284s",
+      "                \u2514\u2500systemd-timesyncd.service @16.836s +319ms",
+      "                  \u2514\u2500systemd-remount-fs.service @3.390s +460ms",
+      "                    \u2514\u2500systemd-fsck-root.service @2.763s +502ms",
+      "                      \u2514\u2500systemd-journald.socket @2.394s",
+      "                        \u2514\u2500system.slice @2.270s",
+      "                          \u2514\u2500-.slice @2.270s"
+    ]
+  },
+  "previous_boot": {
+    "previous_boot_end": null,
+    "reboot_evidence": null,
+    "previous_kernel": null,
+    "journal_readable": false
+  },
+  "ota": {
+    "present": true,
+    "backend": "RawBootstateBackend",
+    "boot_action": "clear",
+    "boot_bootcount": 0,
+    "diag_upgrade_available": 0
+  },
+  "watchdog": {
+    "devices": [
+      {
+        "device": "watchdog0",
+        "identity": "Synopsys DesignWare Watchdog",
+        "state": "inactive",
+        "timeout": "30",
+        "bootstatus": "0",
+        "options": "0x8380"
+      }
+    ],
+    "trial_feed": "inactive"
+  },
+  "failed_units": {
+    "count": 0,
+    "units": []
+  },
+  "thermal": [
+    {
+      "zone": "thermal_zone0",
+      "type": "soc-thermal",
+      "temp_mC": 48181
+    }
+  ]
+}

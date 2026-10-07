@@ -1,0 +1,66 @@
+{
+  "collected_at": "2026-10-07T19:07:10Z",
+  "interfaces": [
+    {
+      "name": "lo",
+      "state": "UNKNOWN",
+      "addresses": [
+        "127.0.0.1/8",
+        "::1/128"
+      ]
+    },
+    {
+      "name": "eth0",
+      "state": "UP",
+      "addresses": [
+        "172.31.180.4/24",
+        "2001:da8:2d00:2180::4112/128",
+        "2001:da8:2d00:2180:73f0:d513:7657:d145/64",
+        "fe80::834:4eef:e63e:cde4/64"
+      ]
+    },
+    {
+      "name": "tailscale0",
+      "state": "UNKNOWN",
+      "addresses": [
+        "100.72.239.86/32",
+        "fd7a:115c:a1e0::201:efd1/128",
+        "fe80::eaae:8e91:b823:d7f7/64"
+      ]
+    }
+  ],
+  "eth": {
+    "driver": null,
+    "speed": "100",
+    "duplex": "full",
+    "link": "up",
+    "interface": "eth0"
+  },
+  "default_routes": [
+    "default via 172.31.180.33 dev eth0 proto dhcp src 172.31.180.4 metric 1002"
+  ],
+  "dns": [
+    "2400:3200::1",
+    "192.168.247.6"
+  ],
+  "connectivity": {
+    "v6_internet": false,
+    "v4_direct": false,
+    "proxy_7890": true
+  },
+  "tailscale": {
+    "installed": true,
+    "backend_state": "Running",
+    "self_online": true,
+    "self_ip": "100.72.239.86",
+    "controlReachable": null,
+    "peers_online": 2,
+    "version": "1.102.4",
+    "health_warnings": []
+  },
+  "nftables": {
+    "ruleset_readable": true,
+    "lines": 119,
+    "tables": 8
+  }
+}

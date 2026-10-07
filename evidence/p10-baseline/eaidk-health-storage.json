@@ -1,0 +1,49 @@
+{
+  "collected_at": "2026-10-07T19:07:05Z",
+  "emmc_sysfs": {
+    "device": "mmc2:0001",
+    "cid": "d60103484244303847390e14d12f5655",
+    "csd": null,
+    "health": {
+      "pre_eol_info": "0x01"
+    },
+    "sectors": 15269888,
+    "name": "HBD08G",
+    "block_dev": "/dev/mmcblk2"
+  },
+  "emmc_extcsd": {
+    "available": false
+  },
+  "disk": {
+    "/": {
+      "total_kib": 7159064,
+      "used_kib": 4678160,
+      "avail_kib": 2390960,
+      "use_percent": 67
+    },
+    "/boot": {
+      "total_kib": 235439,
+      "used_kib": 141503,
+      "avail_kib": 89840,
+      "use_percent": 62
+    }
+  },
+  "write_sources_kib": {
+    "journal": null,
+    "var_log": 2136,
+    "apt_cache": 92796,
+    "coredump": 4,
+    "var_tmp": 35120,
+    "eaidk_ota_state": 907080,
+    "sysstat": 604,
+    "unattended_upgrades": 36
+  },
+  "journal": {
+    "disk_usage": 4194304,
+    "config": {}
+  },
+  "trim": {
+    "fstrim_timer": "enabled",
+    "last_trim": null
+  }
+}

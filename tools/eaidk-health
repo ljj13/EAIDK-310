@@ -1,0 +1,754 @@
+#!/usr/bin/env python3
+"""eaidk-health - unified runtime health snapshot for EAIDK-310.
+
+P10 baseline instrument.  Four views over the same machine:
+
+  status    identity, CPU, memory, zram, thermal, failed units, disk
+  boot      boot timing, previous-boot/reboot evidence, OTA + watchdog state
+  storage   eMMC health, write-amplification sources, trim, usage
+  network   interfaces, routes, DNS, connectivity, Tailscale, nftables
+
+Every command prints human-readable KEY: value lines by default and a
+single JSON object with --json.  Read-only by design: nothing here writes
+to the filesystem or mutates state.  Fields that require root degrade to
+null plus a "permission" note instead of failing the command.
+
+Exit codes:
+  0  collected (individual fields may be null)
+  1  the requested view could not be collected at all
+"""
+
+import argparse
+import glob
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+VERSION = "1.0.0"
+
+# Injectable roots so unit tests can feed fixture trees.
+PROC = "/proc"
+SYS = "/sys"
+VAR = "/var"
+ETC = "/etc"
+RUN = "/run"
+
+
+def read_text(path):
+    try:
+        with open(path, "r", errors="replace") as fh:
+            return fh.read()
+    except (OSError, PermissionError):
+        return None
+
+
+def run_cmd(argv, timeout=20, root_ok=True):
+    """Return (rc, stdout).  Missing binaries become rc 127."""
+    exe = shutil.which(argv[0])
+    if exe is None:
+        return 127, ""
+    try:
+        proc = subprocess.run(
+            [exe] + argv[1:], capture_output=True, text=True, timeout=timeout
+        )
+        return proc.returncode, proc.stdout
+    except (subprocess.TimeoutExpired, OSError):
+        return 124, ""
+
+
+def now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# --------------------------------------------------------------------------
+# collectors (pure where practical, unit-testable against fixture roots)
+# --------------------------------------------------------------------------
+
+def collect_identity():
+    data = {
+        "hostname": None,
+        "kernel": platform.release(),
+        "arch": platform.machine(),
+        "uptime_seconds": None,
+        "loadavg_1_5_15": None,
+        "boot_id": None,
+    }
+    hostname = read_text(os.path.join(ETC, "hostname"))
+    if hostname:
+        data["hostname"] = hostname.strip()
+    uptime = read_text(os.path.join(PROC, "uptime"))
+    if uptime:
+        try:
+            data["uptime_seconds"] = round(float(uptime.split()[0]), 1)
+        except (ValueError, IndexError):
+            pass
+    loadavg = read_text(os.path.join(PROC, "loadavg"))
+    if loadavg:
+        parts = loadavg.split()[:3]
+        try:
+            data["loadavg_1_5_15"] = [round(float(p), 2) for p in parts]
+        except ValueError:
+            pass
+    boot_id = read_text(os.path.join(PROC, "sys", "kernel", "random", "boot_id"))
+    if boot_id:
+        data["boot_id"] = boot_id.strip()
+    return data
+
+
+def collect_cpu():
+    data = {
+        "model": None,
+        "cores": os.cpu_count(),
+        "governor": None,
+        "current_freq_khz": None,
+        "available_freqs_khz": None,
+        "cpufreq_policy": None,
+    }
+    for line in (read_text(os.path.join(PROC, "cpuinfo")) or "").splitlines():
+        if line.startswith("model name") and ": " in line:
+            data["model"] = line.split(": ", 1)[1].strip()
+            break
+    pol = os.path.join(SYS, "devices", "system", "cpu", "cpu0", "cpufreq")
+    gov = read_text(os.path.join(pol, "scaling_governor"))
+    if gov:
+        data["governor"] = gov.strip()
+    cur = read_text(os.path.join(pol, "scaling_cur_freq"))
+    if cur:
+        try:
+            data["current_freq_khz"] = int(cur.strip())
+        except ValueError:
+            pass
+    avail = read_text(os.path.join(pol, "scaling_available_frequencies"))
+    if avail:
+        try:
+            data["available_freqs_khz"] = [int(x) for x in avail.split()]
+        except ValueError:
+            pass
+    data["cpufreq_policy"] = pol
+    return data
+
+
+def collect_memory():
+    data = {
+        "mem_total_kib": None,
+        "mem_available_kib": None,
+        "mem_free_kib": None,
+        "swap_total_kib": None,
+        "swap_free_kib": None,
+        "swap_cached_kib": None,
+    }
+    keys = {
+        "MemTotal": "mem_total_kib",
+        "MemAvailable": "mem_available_kib",
+        "MemFree": "mem_free_kib",
+        "SwapTotal": "swap_total_kib",
+        "SwapFree": "swap_free_kib",
+        "SwapCached": "swap_cached_kib",
+    }
+    for line in (read_text(os.path.join(PROC, "meminfo")) or "").splitlines():
+        parts = line.split(":")
+        if len(parts) == 2 and parts[0] in keys:
+            try:
+                data[keys[parts[0]]] = int(parts[1].strip().split()[0])
+            except (ValueError, IndexError):
+                pass
+    return data
+
+
+def parse_mm_stat(raw):
+    """Parse zram mm_stat: orig compr mem used_total limit.  Sizes in bytes."""
+    if not raw:
+        return None
+    parts = raw.split()
+    if len(parts) < 4:
+        return None
+    try:
+        vals = [int(x) for x in parts[:4]]
+    except ValueError:
+        return None
+    orig, compr, mem_used, used_total = vals
+    ratio = round(orig / compr, 2) if compr else None
+    return {
+        "data_bytes": orig,
+        "compr_bytes": compr,
+        "mem_used_bytes": mem_used,
+        "disksize_used_bytes": used_total,
+        "compression_ratio": ratio,
+    }
+
+
+def collect_zram():
+    data = {
+        "device": None,
+        "disksize_bytes": None,
+        "algorithm": None,
+        "streams": None,
+        "usage": None,
+    }
+    stats = glob.glob(os.path.join(SYS, "block", "zram*"))
+    if not stats:
+        return data
+    zram = sorted(stats)[0]
+    data["device"] = os.path.basename(zram)
+    size = read_text(os.path.join(zram, "queue", "disksize")) or read_text(
+        os.path.join(zram, "disksize")
+    )
+    if size:
+        try:
+            data["disksize_bytes"] = int(size.strip())
+        except ValueError:
+            pass
+    algo = read_text(os.path.join(zram, "comp_algorithm"))
+    if algo:
+        # current algorithm is bracketed, e.g. "lzo lzo-rle [lz4] zstd"
+        m = re.search(r"\[([^]]+)\]", algo)
+        data["algorithm"] = m.group(1) if m else algo.strip().split()[0]
+    streams = read_text(os.path.join(zram, "max_comp_streams"))
+    if streams:
+        try:
+            data["streams"] = int(streams.strip())
+        except ValueError:
+            pass
+    data["usage"] = parse_mm_stat(read_text(os.path.join(zram, "mm_stat")))
+    return data
+
+
+def collect_thermal():
+    zones = []
+    for zpath in sorted(glob.glob(os.path.join(SYS, "class", "thermal", "thermal_zone*"))):
+        name = os.path.basename(zpath)
+        ztype = read_text(os.path.join(zpath, "type"))
+        temp = read_text(os.path.join(zpath, "temp"))
+        zone = {"zone": name, "type": ztype.strip() if ztype else None,
+                "temp_mC": None}
+        if temp:
+            try:
+                zone["temp_mC"] = int(temp.strip())
+            except ValueError:
+                pass
+        zones.append(zone)
+    return zones
+
+
+def collect_failed_units():
+    rc, out = run_cmd(["systemctl", "failed", "--no-legend", "--plain"])
+    if rc not in (0, 1):
+        # rc 1 simply means "some units failed" in some systemd versions
+        pass
+    units = [ln.split()[0] for ln in out.splitlines() if ln.strip()]
+    return {"count": len(units), "units": units}
+
+
+def collect_df(mounts=("/", "/boot")):
+    rc, out = run_cmd(["df", "-k", *mounts])
+    out_map = {}
+    if rc == 0:
+        for line in out.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 6:
+                out_map[parts[5]] = {
+                    "total_kib": int(parts[1]),
+                    "used_kib": int(parts[2]),
+                    "avail_kib": int(parts[3]),
+                    "use_percent": int(parts[4].rstrip("%")),
+                }
+    return out_map
+
+
+def collect_running_service_count():
+    rc, out = run_cmd(
+        ["systemctl", "list-units", "--type=service", "--state=running",
+         "--no-legend", "--plain"]
+    )
+    return len([ln for ln in out.splitlines() if ln.strip()])
+
+
+# ---- boot view -----------------------------------------------------------
+
+ANALYZE_RE = re.compile(
+    r"Startup finished in (?P<kernel>[\d.]+)s \(kernel\)"
+    r"(?: \+ (?P<initrd>[\d.]+)s \(initrd\))?"
+    r" \+ (?P<userspace>[\d.]+)s \(userspace\)"
+    r"(?: = (?P<total>[\d.]+)s)?"
+)
+
+
+def parse_systemd_analyze(out):
+    m = ANALYZE_RE.search(out or "")
+    if not m:
+        return None
+    d = m.groupdict()
+    res = {
+        "kernel_s": float(d["kernel"]),
+        "initrd_s": float(d["initrd"]) if d.get("initrd") else None,
+        "userspace_s": float(d["userspace"]),
+        "total_s": float(d["total"]) if d.get("total") else
+        round(float(d["kernel"]) + (float(d["initrd"] or 0)) + float(d["userspace"]), 3),
+    }
+    return res
+
+
+def collect_boot_timing():
+    data = {"firmware_s": None, "analyze": None, "multi_user_s": None,
+            "userspace_detail": None}
+    rc, out = run_cmd(["systemd-analyze"])
+    if rc == 0:
+        data["analyze"] = parse_systemd_analyze(out)
+    rc, out = run_cmd(["systemd-analyze", "time", "--quiet"])
+    if rc == 0 and out.strip():
+        # e.g. "Startup finished in 5.163s (kernel) + ..." — firmware line
+        m = re.search(r"firmware setup[^=]*=\s*([\d.]+)s", out)
+        if m:
+            data["firmware_s"] = float(m.group(1))
+    rc, out = run_cmd(["systemd-analyze", "critical-chain", "--quiet",
+                       "multi-user.target"])
+    if rc == 0 and out.strip():
+        data["userspace_detail"] = out.strip().splitlines()
+    return data
+
+
+def collect_previous_boot():
+    """Reboot evidence from the journal.  Needs root or adm membership."""
+    data = {"previous_boot_end": None, "reboot_evidence": None,
+            "previous_kernel": None, "journal_readable": False}
+    rc, out = run_cmd(["journalctl", "--list-boots", "--no-pager", "-q",
+                       "-1", "-0"], timeout=30)
+    if rc == 0 and out.strip():
+        data["journal_readable"] = True
+        # lines: "-2 <bootid> Mon 2026-10-07 ... — Mon 2026-10-07 ..."
+        m = re.match(r"\s*-?\d+\s+\S+\s+(.*$)", out.strip())
+        if m:
+            data["previous_boot_end"] = m.group(1).strip()
+    rc, out = run_cmd(
+        ["journalctl", "-b", "-1", "-n", "12", "--no-pager", "-q",
+         "--output=short-iso"], timeout=30)
+    if rc == 0 and out.strip():
+        data["journal_readable"] = True
+        lines = out.strip().splitlines()
+        data["reboot_evidence"] = lines
+    rc, out = run_cmd(["journalctl", "-b", "-1", "-q", "--no-pager", "-n", "1",
+                       "--output=cat", "-k", "-g", "Linux version"], timeout=30)
+    if rc == 0 and out.strip():
+        m = re.search(r"Linux version (\S+)", out)
+        if m:
+            data["previous_kernel"] = m.group(1)
+    return data
+
+
+def collect_ota_state():
+    path = os.path.join(VAR, "lib", "eaidk-ota", "state.json")
+    raw = read_text(path)
+    if not raw:
+        return {"present": False}
+    try:
+        state = json.loads(raw)
+    except ValueError:
+        return {"present": True, "parse_error": True}
+    out = {
+        "present": True,
+        "backend": state.get("backend"),
+        "boot_action": (state.get("bootstate") or {}).get("action"),
+        "boot_bootcount": (state.get("bootstate") or {}).get("bootcount"),
+    }
+    for key in ("stable", "candidate", "role", "updated_at", "stage"):
+        if key in state:
+            out[key] = state[key]
+    diag = state.get("bootstate") or {}
+    if "upgrade_available" in diag:
+        out["diag_upgrade_available"] = diag.get("upgrade_available")
+    if "result" in diag:
+        out["diag_result"] = diag.get("result")
+    return out
+
+
+def collect_watchdog():
+    data = {"devices": [], "trial_feed": None}
+    for wpath in sorted(glob.glob(os.path.join(SYS, "class", "watchdog", "watchdog*"))):
+        dev = {"device": os.path.basename(wpath)}
+        for field in ("identity", "state", "timeout", "bootstatus", "options"):
+            val = read_text(os.path.join(wpath, field))
+            if val is not None:
+                dev[field] = val.strip()
+        data["devices"].append(dev)
+    rc, out = run_cmd(["systemctl", "is-active", "eaidk-ota-trial-feed"])
+    data["trial_feed"] = out.strip() or ("inactive" if rc in (3,) else None)
+    return data
+
+
+# ---- storage view --------------------------------------------------------
+
+EMMC_SYSFS_FIELDS = (
+    "pre_eol_info",
+    "device_life_time_est_typ_a",
+    "device_life_time_est_typ_b",
+)
+
+
+def collect_emmc_sysfs():
+    """Locate the on-board eMMC (non-removable mmc_host) and read health."""
+    data = {"device": None, "cid": None, "csd": None, "health": {},
+            "sectors": None}
+    for host in sorted(glob.glob(os.path.join(SYS, "class", "mmc_host", "mmc*"))):
+        for dev in sorted(glob.glob(os.path.join(host, "mmc*"))):
+            if not os.path.isdir(dev):
+                continue
+            pre = read_text(os.path.join(dev, "pre_eol_info"))
+            if pre is None:
+                continue
+            data["device"] = os.path.basename(dev)
+            cid = read_text(os.path.join(dev, "cid"))
+            name = read_text(os.path.join(dev, "name"))
+            data["cid"] = cid.strip() if cid else None
+            data["name"] = name.strip() if name else None
+            for field in EMMC_SYSFS_FIELDS:
+                val = read_text(os.path.join(dev, field))
+                if val is not None:
+                    data["health"][field] = val.strip()
+            for block in glob.glob(os.path.join(SYS, "block", "mmcblk*")):
+                devlink = os.path.join(block, "device")
+                if os.path.islink(devlink) and os.path.basename(
+                        os.readlink(devlink)) == os.path.basename(dev):
+                    sectors = read_text(os.path.join(block, "size"))
+                    if sectors:
+                        data["sectors"] = int(sectors.strip())
+                    data["block_dev"] = "/dev/" + os.path.basename(block)
+    return data
+
+
+def collect_emmc_extcsd():
+    """Optional deeper health via mmc-utils (root only)."""
+    rc, out = run_cmd(["mmc", "extcsd", "read", "/dev/mmcblk2"], timeout=30)
+    if rc != 0 or not out:
+        return {"available": False}
+    fields = {}
+    for line in out.splitlines():
+        m = re.match(r"\s*PeakWriteTime:\s*(\S+)", line)
+        if m:
+            fields["peak_write_time_ms"] = m.group(1)
+        m = re.match(r"\s*Cache size \[KiB\]:\s*(\d+)", line)
+        if m:
+            fields["cache_kib"] = int(m.group(1))
+        m = re.match(r"\s*Secure Removal Type:\s*(\S+)", line)
+        if m:
+            fields["secure_removal_type"] = m.group(1)
+        m = re.match(r"\s*Pre EOL information \[.*\]:\s*(\S+)", line)
+        if m:
+            fields["pre_eol_info_extcsd"] = m.group(1)
+        m = re.match(r"\s*Device life time estimate type [AB] \[.*\]:\s*(\S+)",
+                     line)
+        if m:
+            key = ("life_est_type_a" if "type A" in line else "life_est_type_b")
+            fields[key] = m.group(1)
+    return {"available": True, **fields}
+
+
+def collect_write_sources():
+    """Sizes of known persistent-write roots (root needed for some)."""
+    sources = {}
+    targets = {
+        "journal": os.path.join(VAR, "log", "journal"),
+        "var_log": os.path.join(VAR, "log"),
+        "apt_cache": os.path.join(VAR, "cache", "apt"),
+        "coredump": os.path.join(VAR, "lib", "systemd", "coredump"),
+        "var_tmp": os.path.join(VAR, "tmp"),
+        "eaidk_ota_state": os.path.join(VAR, "lib", "eaidk-ota"),
+        "sysstat": os.path.join(VAR, "log", "sysstat"),
+        "unattended_upgrades": os.path.join(VAR, "log", "unattended-upgrades"),
+    }
+    for label, path in targets.items():
+        if not os.path.exists(path):
+            sources[label] = None
+            continue
+        rc, out = run_cmd(["du", "-sk", path], timeout=60)
+        if rc == 0:
+            try:
+                sources[label] = int(out.split()[0])
+            except (ValueError, IndexError):
+                sources[label] = None
+        else:
+            sources[label] = None
+    return sources
+
+
+def collect_journal_policy():
+    data = {"disk_usage": None, "config": {}}
+    rc, out = run_cmd(["journalctl", "--disk-usage"], timeout=30)
+    if rc == 0 and out.strip():
+        # "Archived and active journals take up 4.0M in the file system."
+        m = re.search(r"take up ([\d.]+)\s*([KMGT]?)(i?B)?", out)
+        if m:
+            mult = {"": 1, "K": 1024, "M": 1024 ** 2,
+                    "G": 1024 ** 3, "T": 1024 ** 4}[m.group(2)]
+            data["disk_usage"] = int(float(m.group(1)) * mult)
+    for conf in (os.path.join(ETC, "systemd", "journald.conf"),):
+        raw = read_text(conf)
+        if raw is None:
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", "[")):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                data["config"][k.strip()] = v.strip()
+    return data
+
+
+def collect_trim():
+    data = {"fstrim_timer": None, "last_trim": None}
+    rc, out = run_cmd(["systemctl", "is-enabled", "fstrim.timer"])
+    data["fstrim_timer"] = out.strip() if rc in (0, 1) else None
+    rc, out = run_cmd(["journalctl", "-u", "fstrim.service", "--no-pager",
+                       "-q", "-n", "3", "--output=short-iso"], timeout=30)
+    if rc == 0 and out.strip():
+        data["last_trim"] = out.strip().splitlines()[-1]
+    return data
+
+
+# ---- network view --------------------------------------------------------
+
+def collect_interfaces():
+    rc, out = run_cmd(["ip", "-br", "addr"])
+    ifaces = []
+    if rc == 0:
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                ifaces.append({"name": parts[0], "state": parts[1],
+                               "addresses": parts[2:]})
+    return ifaces
+
+
+def collect_eth_detail():
+    data = {"driver": None, "speed": None, "duplex": None, "link": None}
+    eth = None
+    for iface in collect_interfaces():
+        if iface["name"].startswith(("eth", "end")):
+            eth = iface["name"]
+            break
+    data["interface"] = eth
+    if not eth:
+        return data
+    for field in ("driver", "speed", "duplex"):
+        val = read_text(os.path.join(SYS, "class", "net", eth, field))
+        if val is not None and val.strip() and val.strip() != "Unknown!":
+            data[field] = val.strip()
+    operstate = read_text(os.path.join(SYS, "class", "net", eth, "operstate"))
+    if operstate:
+        data["link"] = operstate.strip()
+    return data
+
+
+def collect_routes():
+    routes = []
+    rc, out = run_cmd(["ip", "route", "show", "default"])
+    if rc == 0:
+        routes = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    return routes
+
+
+def collect_dns():
+    servers = []
+    raw = read_text(os.path.join(ETC, "resolv.conf"))
+    if raw:
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("nameserver "):
+                servers.append(line.split(None, 1)[1])
+    return servers
+
+
+def collect_connectivity():
+    """Layered connectivity: v6 direct, v4 direct, v4 via local proxy."""
+    data = {"v6_internet": None, "v4_direct": None, "proxy_7890": None}
+    rc, _ = run_cmd(["curl", "-6", "-s", "-o", "/dev/null", "-m", "8",
+                     "-w", "%{http_code}", "https://www.google.com/generate_204"])
+    data["v6_internet"] = (rc == 0)
+    rc, out = run_cmd(["curl", "-4", "-s", "-o", "/dev/null", "-m", "8",
+                       "-w", "%{http_code}", "https://www.google.com/generate_204"])
+    data["v4_direct"] = (rc == 0)
+    rc, out = run_cmd(["curl", "-s", "-o", "/dev/null", "-m", "5", "-x",
+                       "http://127.0.0.1:7890",
+                       "-w", "%{http_code}",
+                       "https://www.google.com/generate_204"])
+    data["proxy_7890"] = (rc == 0)
+    return data
+
+
+def collect_tailscale():
+    data = {"installed": False, "backend_state": None, "self_online": None,
+            "self_ip": None, "controlReachable": None, "peers_online": None,
+            "version": None}
+    rc, out = run_cmd(["tailscale", "version"])
+    if rc != 0:
+        return data
+    data["installed"] = True
+    data["version"] = out.strip().splitlines()[0] if out.strip() else None
+    rc, out = run_cmd(["tailscale", "status", "--json"], timeout=30)
+    if rc == 0 and out.strip():
+        try:
+            ts = json.loads(out)
+        except ValueError:
+            return data
+        data["backend_state"] = ts.get("BackendState")
+        self_key = ts.get("Self", {})
+        data["self_online"] = self_key.get("Online")
+        ips = self_key.get("TailscaleIPs") or []
+        data["self_ip"] = ips[0] if ips else None
+        data["controlReachable"] = ts.get("ControlHealth", {}).get(
+            "reachable") if isinstance(ts.get("ControlHealth"), dict) else None
+        health = ts.get("Health") or []
+        data["health_warnings"] = health
+        peers = ts.get("Peer") or {}
+        data["peers_online"] = sum(
+            1 for p in peers.values() if p.get("Online"))
+    return data
+
+
+def collect_nftables():
+    rc, out = run_cmd(["nft", "list", "ruleset"], timeout=30, root_ok=True)
+    if rc != 0:
+        return {"ruleset_readable": False}
+    return {
+        "ruleset_readable": True,
+        "lines": len(out.splitlines()),
+        "tables": len(re.findall(r"^table ", out, re.M)),
+    }
+
+
+# --------------------------------------------------------------------------
+# views
+# --------------------------------------------------------------------------
+
+def view_status():
+    return {
+        "collected_at": now_iso(),
+        "identity": collect_identity(),
+        "cpu": collect_cpu(),
+        "memory": collect_memory(),
+        "zram": collect_zram(),
+        "thermal": collect_thermal(),
+        "failed_units": collect_failed_units(),
+        "disk": collect_df(),
+        "running_services": collect_running_service_count(),
+    }
+
+
+def view_boot():
+    return {
+        "collected_at": now_iso(),
+        "identity": collect_identity(),
+        "timing": collect_boot_timing(),
+        "previous_boot": collect_previous_boot(),
+        "ota": collect_ota_state(),
+        "watchdog": collect_watchdog(),
+        "failed_units": collect_failed_units(),
+        "thermal": collect_thermal(),
+    }
+
+
+def view_storage():
+    return {
+        "collected_at": now_iso(),
+        "emmc_sysfs": collect_emmc_sysfs(),
+        "emmc_extcsd": collect_emmc_extcsd(),
+        "disk": collect_df(),
+        "write_sources_kib": collect_write_sources(),
+        "journal": collect_journal_policy(),
+        "trim": collect_trim(),
+    }
+
+
+def view_network():
+    return {
+        "collected_at": now_iso(),
+        "interfaces": collect_interfaces(),
+        "eth": collect_eth_detail(),
+        "default_routes": collect_routes(),
+        "dns": collect_dns(),
+        "connectivity": collect_connectivity(),
+        "tailscale": collect_tailscale(),
+        "nftables": collect_nftables(),
+    }
+
+
+VIEWS = {
+    "status": view_status,
+    "boot": view_boot,
+    "storage": view_storage,
+    "network": view_network,
+}
+
+
+# --------------------------------------------------------------------------
+# human rendering
+# --------------------------------------------------------------------------
+
+def fmt_bytes(num_bytes):
+    if num_bytes is None:
+        return "?"
+    val = float(num_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if abs(val) < 1024 or unit == "GiB":
+            return f"{val:.1f}{unit}"
+        val /= 1024
+    return f"{val:.1f}GiB"
+
+
+def render(data, indent=0):
+    """Minimal generic renderer: nested dicts/lists as aligned lines."""
+    pad = "  " * indent
+    lines = []
+    if isinstance(data, dict):
+        for key, val in data.items():
+            if isinstance(val, (dict, list)):
+                lines.append(f"{pad}{key}:")
+                lines.extend(render(val, indent + 1))
+            else:
+                lines.append(f"{pad}{key}: {val}")
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, (dict, list)):
+                lines.extend(render(item, indent))
+                lines.append("")
+            else:
+                lines.append(f"{pad}- {item}")
+    else:
+        lines.append(f"{pad}{data}")
+    return lines
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="eaidk-health", description="EAIDK-310 runtime health snapshot")
+    parser.add_argument("--version", action="version",
+                        version=f"eaidk-health {VERSION}")
+    parser.add_argument("view", choices=sorted(VIEWS),
+                        help="which health view to collect")
+    parser.add_argument("--json", action="store_true",
+                        help="emit a single JSON object")
+    args = parser.parse_args(argv)
+
+    try:
+        data = VIEWS[args.view]()
+    except Exception as exc:  # view-level failure
+        print(f"eaidk-health: failed to collect '{args.view}': {exc}",
+              file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(data, indent=2, sort_keys=False, default=str))
+    else:
+        print(f"eaidk-health {args.view} @ {data['collected_at']}")
+        for line in render(data):
+            print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
