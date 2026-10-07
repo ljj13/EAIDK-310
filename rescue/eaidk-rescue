@@ -1,0 +1,178 @@
+#!/bin/bash
+# eaidk-rescue - repair toolkit on the EAIDK-310 Rescue TF.
+#
+# Run on the RESCUE SYSTEM (booted from the TF card).  The on-board eMMC is
+# /dev/mmcblk2; the rescue card itself is /dev/mmcblk0 (or mmcblk1 — every
+# command resolves it dynamically and refuses to touch the boot device).
+#
+# Subcommands (read-only unless stated):
+#   status          overview: boot device, eMMC health, GPT, extlinux, OTA state
+#   gpt             print the eMMC partition table
+#   fsck            fsck.ext4 -f the eMMC /boot and / (they must be unmounted)
+#   mount-root      mount eMMC rootfs at /mnt/emmc (persistent op)
+#   umount-root     unmount /mnt/emmc
+#   extlinux-check  validate the eMMC extlinux.conf structure
+#   bootstate       inspect OTA RAW bootstate (bootcount/upgrade_available)
+#   kernel-install BUNDLE.tar.zst [--yes]
+#                   install a release bundle's kernel into the eMMC
+#                   (boot artifacts + modules; dry-run without --yes)
+#   uboot-restore FILE --window {idbloader|uboot} --yes
+#                   DANGEROUS: raw-write a loader region on the eMMC.
+#                   Requires all three arguments; never runs implicitly.
+set -u
+
+EMMC=/dev/mmcblk2
+MNT=/mnt/emmc
+
+fail() { echo "eaidk-rescue: $*" >&2; exit 1; }
+boot_dev() {
+    local src
+    src=$(findmnt -n -o SOURCE / 2>/dev/null) || src=""
+    case "$src" in
+        /dev/mmcblk0*|/dev/mmcblk1*) echo "${src%%p*}" ;;
+        *) fail "not booted from a TF card (root=$src); refusing" ;;
+    esac
+}
+
+cmd_status() {
+    echo "== boot device : $(boot_dev)"
+    echo "== eMMC        : $EMMC"
+    D=/sys/block/mmcblk2/device
+    [[ -d $D ]] && echo "== eMMC health : pre_eol=$(cat $D/pre_eol_info 2>/dev/null) life=$(cat $D/life_time 2>/dev/null)"
+    echo; echo "== GPT"; sfdisk -d "$EMMC" 2>/dev/null || echo "(unreadable)"
+    echo; echo "== extlinux"
+    local mnt_done=0
+    [[ -d $MNT/boot ]] || { mkdir -p "$MNT"; mount "${EMMC}p2" "$MNT" 2>/dev/null && mount "${EMMC}p1" "$MNT/boot" 2>/dev/null; mnt_done=1; }
+    if [[ -f $MNT/boot/extlinux/extlinux.conf ]]; then
+        grep -E "^(default|label|LINUX|FDT|INITRD|APPEND)" "$MNT/boot/extlinux/extlinux.conf"
+    else
+        echo "(extlinux.conf not found — that is the repair target)"
+    fi
+    echo; echo "== OTA state"
+    eaidk-ota status 2>/dev/null | head -8 || echo "(eaidk-ota failed)"
+    [[ $mnt_done -eq 1 ]] && umount "$MNT/boot" "$MNT" 2>/dev/null
+}
+
+cmd_gpt() { sfdisk -d "$EMMC"; }
+
+cmd_fsck() {
+    for p in "${EMMC}p1" "${EMMC}p2"; do
+        if findmnt -n -o SOURCE "$p" >/dev/null 2>&1; then
+            fail "$p is mounted; umount first"
+        fi
+    done
+    fsck.ext4 -f "${EMMC}p1"
+    fsck.ext4 -f "${EMMC}p2"
+}
+
+cmd_mount_root() {
+    mkdir -p "$MNT"
+    mount "${EMMC}p2" "$MNT"
+    mount "${EMMC}p1" "$MNT/boot" 2>/dev/null || echo "note: eMMC /boot mount failed"
+    echo "mounted at $MNT"
+}
+
+cmd_umount_root() { umount "$MNT/boot" 2>/dev/null; umount "$MNT"; echo "unmounted"; }
+
+cmd_extlinux_check() {
+    [[ -d $MNT/boot ]] || cmd_mount_root
+    local conf="$MNT/boot/extlinux/extlinux.conf"
+    [[ -f $conf ]] || fail "$conf missing"
+    python3 - "$conf" <<'PY'
+import re, sys
+text = open(sys.argv[1]).read()
+labels = re.findall(r"^label (\S+)", text, re.M)
+need = ["LINUX", "FDT", "INITRD", "APPEND"]
+for label in labels:
+    block = re.search(rf"(?ms)^label {re.escape(label)}$(.*?)(?=^label |\Z)", text)
+    missing = [k for k in need if not re.search(rf"^\s*{k}\s", block.group(1), re.M)]
+    print(f"{label}: {'OK' if not missing else 'MISSING ' + ','.join(missing)}")
+print(f"default: {re.search(r'^default (\S+)', text, re.M).group(1)}")
+PY
+}
+
+cmd_bootstate() { exec eaidk-bootstate "$@"; }
+
+cmd_kernel_install() {
+    local bundle="" apply=0
+    while (($#)); do
+        case "$1" in
+            --yes) apply=1 ;;
+            *) bundle="$1" ;;
+        esac
+        shift
+    done
+    [[ -n $bundle && -f $bundle ]] || fail "kernel-install BUNDLE.tar.zst [--yes]"
+    local work; work=$(mktemp -d)
+    unzstd -q -c "$bundle" | tar -x -C "$work"
+    local root; root=$(echo "$work"/*/); root="${root%/}"
+    local rel; rel=$(basename "$root" | sed 's/^eaidk310-linux-//')
+    echo "bundle kernel : $rel"
+    echo "target        : $EMMC p1=/boot p2=/"
+    echo "would install : boot/Image-$rel boot/uInitrd-$rel boot/dtb/rockchip/*.dtb"
+    echo "                lib/modules/$rel"
+    if [[ $apply -ne 1 ]]; then
+        echo "DRY RUN — re-run with --yes to install"
+        rm -rf "$work"; return 0
+    fi
+    [[ -d $MNT/boot ]] || cmd_mount_root
+    cp "$root/boot/Image-$rel" "$root/boot/uInitrd-$rel" "$MNT/boot/"
+    mkdir -p "$MNT/boot/dtb/rockchip"
+    cp -r "$root/boot/dtb/rockchip/." "$MNT/boot/dtb/rockchip/"
+    mkdir -p "$MNT/lib/modules"
+    cp -a "$root/root/lib/modules/." "$MNT/lib/modules/"
+    chroot "$MNT" depmod -a "$rel"
+    sync
+    echo "KERNEL_INSTALL=PASS release=$rel"
+    echo "add/point an extlinux label at /Image-$rel to boot it"
+    rm -rf "$work"
+}
+
+cmd_uboot_restore() {
+    local file="" window="" yes=0
+    while (($#)); do
+        case "$1" in
+            --window) window="$2"; shift ;;
+            --yes) yes=1 ;;
+            *) file="$1" ;;
+        esac
+        shift
+    done
+    [[ -n $file && -n $window && $yes -eq 1 ]] || fail \
+        "uboot-restore FILE --window {idbloader|uboot} --yes  (all required; raw writer)"
+    case "$window" in
+        idbloader)
+            local seek=64 count=16192
+            [[ $(stat -c%s "$file") -le $((count*512)) ]] || fail "file larger than the 32K..8M idbloader window"
+            ;;
+        uboot)
+            local seek=16384 count=8192
+            [[ $(stat -c%s "$file") -le $((count*512)) ]] || fail "file larger than the 8M..12M u-boot window"
+            ;;
+        *) fail "window must be idbloader or uboot" ;;
+    esac
+    echo "ABOUT TO RAW-WRITE $EMMC sectors $seek..$((seek+count)) ($window) from: $file"
+    echo "A wrong image here can make the board unbootable without Maskrom recovery."
+    printf 'type exactly RESTORE to continue: '
+    local answer; read -r answer
+    [[ $answer == RESTORE ]] || fail "aborted"
+    dd if="$file" of="$EMMC" bs=512 seek=$seek conv=fsync,notrunc status=none
+    echo "written; verify before rebooting:"
+    dd if="$EMMC" bs=512 skip=$seek count=$count 2>/dev/null | \
+        cmp - "$file" && echo "UBOOT_RESTORE=VERIFIED" || fail "READBACK MISMATCH"
+}
+
+cmd="${1:-status}"
+shift || true
+case "$cmd" in
+    status) cmd_status "$@" ;;
+    gpt) cmd_gpt "$@" ;;
+    fsck) cmd_fsck "$@" ;;
+    mount-root) cmd_mount_root "$@" ;;
+    umount-root) cmd_umount_root "$@" ;;
+    extlinux-check) cmd_extlinux_check "$@" ;;
+    bootstate) cmd_bootstate "$@" ;;
+    kernel-install) cmd_kernel_install "$@" ;;
+    uboot-restore) cmd_uboot_restore "$@" ;;
+    *) fail "unknown command: $cmd (see header)" ;;
+esac

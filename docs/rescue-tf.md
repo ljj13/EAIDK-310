@@ -10,11 +10,14 @@ which target the previous known-good (6.12.111).
 
 A prepared rescue TF card is an independent boot path: U-Boot's
 `boot_targets=mmc1 mmc0 …` scans the SD before eMMC, so a card with a
-bootable prefix boots without touching eMMC.  The card image is not yet
-produced by a fully automated flow — build one by writing the failsafe
-U-Boot prefix (tools in `tools/`) plus a rootfs of your choice, and
-record its SHA-256.  Do not assume an unverified "one-click rescue
-image".
+bootable prefix boots without touching eMMC.  Since P10 the card is
+produced by an automated, hash-pinned flow:
+`rescue/build-rescue-tf.sh` (image) + `rescue/verify-rescue-tf.sh`
+(loopback acceptance), with the on-card `eaidk-rescue` repair toolkit.
+See [rescue/README-P10.md](../rescue/README-P10.md) for provenance,
+layout and the double-run verification record.  The final write-to-card
+and boot test remain physical steps
+(RESCUE_TF_STATUS=READY_FOR_PHYSICAL_VALIDATION).
 
 ## Bootloader-level failure (on-site only)
 
