@@ -859,6 +859,112 @@ def cmd_history(args) -> int:
     return EXIT_OK
 
 
+# States in which staging is referenced by neither an active trial nor a
+# pending health decision; only here may bundles be garbage-collected.
+PRUNE_ALLOWED_STATES = ("IDLE", "COMMITTED")
+
+
+def _dir_size_bytes(path: pathlib.Path) -> int:
+    total = 0
+    for p in path.rglob("*"):
+        try:
+            if p.is_file() and not p.is_symlink():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def cmd_prune_staging(args) -> int:
+    """Garbage-collect superseded candidate bundles (P10 eMMC endurance).
+
+    A staged bundle exists only to feed install-candidate; once a candidate
+    is committed (or superseded) its bundle is dead weight on a 7.3 GiB
+    eMMC.  Conservative by construction: refuses outside IDLE/COMMITTED,
+    always keeps the active release's bundle and anything whose hash matches
+    the state file, dry-run unless --yes.
+    """
+    state = StateStore(pathlib.Path(args.state_dir))
+    data = state.read()
+    cur_state = data.get("state", "IDLE")
+    if cur_state not in PRUNE_ALLOWED_STATES:
+        return fail_exit(EXIT_CONFLICT,
+                         f"prune-staging refuses in state {cur_state}; "
+                         f"allowed: {', '.join(PRUNE_ALLOWED_STATES)}")
+    staging_root = pathlib.Path(args.state_dir) / STAGING_NAME
+    if not staging_root.is_dir():
+        print("PRUNE_STAGING=PASS removed=0 freed_bytes=0 (no staging dir)")
+        return EXIT_OK
+    protected_names = set()
+    for key in ("release", "previous_release", "candidate_label"):
+        if data.get(key):
+            protected_names.add(str(data[key]))
+    protected_hashes = {data.get("bundle_sha256")} - {None}
+    candidates = []
+    for rel in sorted(staging_root.iterdir()):
+        if not rel.is_dir() or rel.name.startswith("."):
+            continue
+        if rel.name in protected_names:
+            continue
+        marker = rel / ".bundle.sha256"
+        if marker.exists():
+            try:
+                if marker.read_text(encoding="utf-8").strip() in protected_hashes:
+                    continue
+            except OSError:
+                continue
+        try:
+            mtime = rel.stat().st_mtime
+        except OSError:
+            continue
+        candidates.append((mtime, rel))
+    candidates.sort(reverse=True)
+    doomed = [rel for _, rel in candidates[args.keep:]]
+    plan = [{"release": rel.name, "bytes": _dir_size_bytes(rel)}
+            for rel in doomed]
+    if args.json:
+        print(json.dumps({
+            "state": cur_state,
+            "kept": [rel.name for _, rel in candidates[:args.keep]],
+            "protected": sorted(protected_names),
+            "planned_removals": plan,
+            "executed": bool(args.yes),
+        }, indent=2, sort_keys=True))
+    else:
+        print(f"state: {cur_state}; keep {args.keep} newest staging bundle(s)")
+        for item in plan:
+            tag = "removed" if args.yes else "would remove"
+            print(f"  {tag}: {item['release']} ({item['bytes']} bytes)")
+    if not doomed:
+        print("PRUNE_STAGING=PASS removed=0 freed_bytes=0")
+        return EXIT_OK
+    if not args.yes:
+        print("PRUNE_STAGING=DRYRUN "
+              f"planned={len(doomed)} re-run with --yes to execute")
+        return EXIT_OK
+    freed = 0
+    removed = 0
+    for item, rel in zip(plan, doomed):
+        try:
+            shutil.rmtree(rel)
+        except OSError as exc:
+            return fail_exit(EXIT_ERROR, f"failed to remove {rel}: {exc}")
+        freed += item["bytes"]
+        removed += 1
+    # Append-only history entry; the state machine itself is untouched.
+    state.history.mkdir(parents=True, exist_ok=True)
+    entry = {"at": now_iso(), "from": cur_state, "to": cur_state,
+             "action": "prune-staging",
+             "removed": [item["release"] for item in plan],
+             "freed_bytes": freed}
+    hfile = state.history / (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        + "-prune-staging.json")
+    atomic_write(hfile, json.dumps(entry, indent=2, sort_keys=True) + "\n")
+    print(f"PRUNE_STAGING=PASS removed={removed} freed_bytes={freed}")
+    return EXIT_OK
+
+
 def current_default_entry(boot_dir: pathlib.Path) -> dict:
     """Parse the current default extlinux entry (label + APPEND line)."""
     conf = boot_dir / "extlinux" / "extlinux.conf"
@@ -1816,6 +1922,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="show state machine + staged releases")
     sub.add_parser("history", help="show state transition history")
+    prune = sub.add_parser("prune-staging",
+                           help="remove superseded candidate bundles "
+                                "(dry-run unless --yes)")
+    prune.add_argument("--keep", type=int, default=1,
+                       help="newest bundles to keep besides the protected "
+                            "release (default: 1)")
+    prune.add_argument("--yes", action="store_true",
+                       help="execute the removals (default: dry run)")
 
     plan = sub.add_parser("plan-install", help="print the /boot install plan (no changes)")
     plan.add_argument("release")
@@ -1858,6 +1972,7 @@ def main(argv=None) -> int:
     "install-trial-feed": cmd_install_trial_feed,
         "inspect": cmd_inspect, "verify": cmd_verify, "stage": cmd_stage,
         "status": cmd_status, "history": cmd_history,
+        "prune-staging": cmd_prune_staging,
         "plan-install": cmd_plan_install, "install-candidate": cmd_install_candidate,
         "health": cmd_health, "authorize-local": cmd_authorize_local,
         "try": cmd_try, "arm": cmd_arm, "commit": cmd_commit, "rollback": cmd_rollback,

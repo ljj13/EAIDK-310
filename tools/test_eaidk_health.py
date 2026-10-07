@@ -124,6 +124,29 @@ class TestCollectEmmcSysfs(unittest.TestCase):
         self.assertEqual(data["health"], {})
 
 
+class TestExtcsdParsing(unittest.TestCase):
+    EXTCSD_SAMPLE = (
+        "Cache Size [CACHE_SIZE] is 8192 KiB\n"
+        "Sector Count [SEC_COUNT: 0x00e90000]\n"
+        "eMMC Life Time Estimation A [EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A]: 0x01\n"
+        "eMMC Life Time Estimation B [EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B]: 0x01\n"
+        "eMMC Pre EOL information [EXT_CSD_PRE_EOL_INFO]: 0x01\n"
+        "Secure Removal Type [SECURE_REMOVAL_TYPE]: 0x09\n"
+    )
+
+    def test_parses_real_extcsd_layout(self):
+        with mock.patch.object(h, "run_cmd",
+                               return_value=(0, self.EXTCSD_SAMPLE)):
+            data = h.collect_emmc_extcsd()
+        self.assertTrue(data["available"])
+        self.assertEqual(data["pre_eol_info_extcsd"], "0x01")
+        self.assertEqual(data["life_est_type_a"], "0x01")
+        self.assertEqual(data["life_est_type_b"], "0x01")
+        self.assertEqual(data["cache_kib"], 8192)
+        self.assertEqual(data["secure_removal_type"], "0x09")
+        self.assertEqual(data["sector_count"], 0x00E90000)
+
+
 class TestCollectDns(unittest.TestCase):
     def test_fixture(self):
         with tempfile.TemporaryDirectory() as root:

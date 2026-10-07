@@ -317,21 +317,22 @@ def collect_previous_boot():
     data = {"previous_boot_end": None, "reboot_evidence": None,
             "previous_kernel": None, "journal_readable": False}
     rc, out = run_cmd(["journalctl", "--list-boots", "--no-pager", "-q",
-                       "-1", "-0"], timeout=30)
-    if rc == 0 and out.strip():
+                       "--boot=-1"], timeout=30)
+    if rc == 0:
         data["journal_readable"] = True
-        # lines: "-2 <bootid> Mon 2026-10-07 ... — Mon 2026-10-07 ..."
-        m = re.match(r"\s*-?\d+\s+\S+\s+(.*$)", out.strip())
-        if m:
-            data["previous_boot_end"] = m.group(1).strip()
+        if out.strip():
+            # lines: "-1 <bootid> Mon 2026-10-07 ... — Mon 2026-10-07 ..."
+            m = re.match(r"\s*-?\d+\s+\S+\s+(.*$)", out.strip())
+            if m:
+                data["previous_boot_end"] = m.group(1).strip()
     rc, out = run_cmd(
-        ["journalctl", "-b", "-1", "-n", "12", "--no-pager", "-q",
+        ["journalctl", "--boot=-1", "-n", "12", "--no-pager", "-q",
          "--output=short-iso"], timeout=30)
     if rc == 0 and out.strip():
         data["journal_readable"] = True
         lines = out.strip().splitlines()
         data["reboot_evidence"] = lines
-    rc, out = run_cmd(["journalctl", "-b", "-1", "-q", "--no-pager", "-n", "1",
+    rc, out = run_cmd(["journalctl", "--boot=-1", "-q", "--no-pager", "-n", "1",
                        "--output=cat", "-k", "-g", "Linux version"], timeout=30)
     if rc == 0 and out.strip():
         m = re.search(r"Linux version (\S+)", out)
@@ -386,6 +387,7 @@ EMMC_SYSFS_FIELDS = (
     "pre_eol_info",
     "device_life_time_est_typ_a",
     "device_life_time_est_typ_b",
+    "life_time",
 )
 
 
@@ -427,23 +429,28 @@ def collect_emmc_extcsd():
         return {"available": False}
     fields = {}
     for line in out.splitlines():
-        m = re.match(r"\s*PeakWriteTime:\s*(\S+)", line)
+        m = re.search(r"PeakWriteTime:\s*(\S+)", line)
         if m:
             fields["peak_write_time_ms"] = m.group(1)
-        m = re.match(r"\s*Cache size \[KiB\]:\s*(\d+)", line)
+        m = re.search(r"Cache Size \[CACHE_SIZE\] is (\d+) KiB", line)
         if m:
             fields["cache_kib"] = int(m.group(1))
-        m = re.match(r"\s*Secure Removal Type:\s*(\S+)", line)
+        m = re.search(r"Secure Removal Type \[[^\]]*\]:\s*(\S+)", line)
         if m:
             fields["secure_removal_type"] = m.group(1)
-        m = re.match(r"\s*Pre EOL information \[.*\]:\s*(\S+)", line)
+        m = re.search(r"Pre EOL information \[[^\]]*\]:\s*(\S+)", line)
         if m:
             fields["pre_eol_info_extcsd"] = m.group(1)
-        m = re.match(r"\s*Device life time estimate type [AB] \[.*\]:\s*(\S+)",
-                     line)
+        m = re.search(r"Life Time Estimation ([AB]) \[[^\]]*\]:\s*(\S+)",
+                      line)
         if m:
-            key = ("life_est_type_a" if "type A" in line else "life_est_type_b")
-            fields[key] = m.group(1)
+            fields[f"life_est_type_{m.group(1).lower()}"] = m.group(2)
+        m = re.search(r"Sector Count \[SEC_COUNT[: ]+\s*(\S+)\]", line)
+        if m:
+            try:
+                fields["sector_count"] = int(m.group(1), 0)
+            except ValueError:
+                pass
     return {"available": True, **fields}
 
 
@@ -485,7 +492,9 @@ def collect_journal_policy():
             mult = {"": 1, "K": 1024, "M": 1024 ** 2,
                     "G": 1024 ** 3, "T": 1024 ** 4}[m.group(2)]
             data["disk_usage"] = int(float(m.group(1)) * mult)
-    for conf in (os.path.join(ETC, "systemd", "journald.conf"),):
+    for conf in ([os.path.join(ETC, "systemd", "journald.conf")]
+                 + sorted(glob.glob(
+                     os.path.join(ETC, "systemd", "journald.conf.d", "*.conf")))):
         raw = read_text(conf)
         if raw is None:
             continue
