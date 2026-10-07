@@ -45,6 +45,33 @@ class PublicationGateTests(unittest.TestCase):
         errors = load_gate().scan_repository(self.root)
         self.assertTrue(any("private key" in error.lower() for error in errors), errors)
 
+    def test_rejects_literal_password_assignment(self):
+        # Literal split so this source file never matches the pattern itself.
+        assignment = "$Pass" + "word = '12" + "34'\n"
+        (self.root / "script.ps1").write_text(
+            assignment + "Send-Line $Pass" + "word\n", encoding="utf-8")
+        errors = load_gate().scan_repository(self.root)
+        self.assertTrue(any("password" in error.lower() for error in errors), errors)
+
+    def test_password_prompt_with_screen_art_is_not_a_secret(self):
+        # Serial logs legitimately contain a bare "Password: " prompt echo;
+        # the pattern must not cross the newline into ANSI box art.
+        (self.root / "console.log").write_bytes(
+            b"eaidk-310 login: Fog\r\nPassword: \r\n"
+            b" \x1b[0;1;34;94m_____\x1b[0m \x1b[0;34m__\x1b[0m ____\r\n")
+        self.assertEqual(load_gate().scan_repository(self.root), [])
+
+    def test_skips_gitignored_paths(self):
+        import subprocess
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        (self.root / ".gitignore").write_text("logs/\n", encoding="utf-8")
+        evidence = self.root / "logs" / "session.log"
+        evidence.parent.mkdir()
+        evidence.write_text("$Pass" + "word = '12" + "34'\n", encoding="utf-8")
+        (self.root / "tracked.txt").write_text("CONFIG_ARM64=y\n",
+                                               encoding="utf-8")
+        self.assertEqual(load_gate().scan_repository(self.root), [])
+
     def test_rejects_release_binary_inside_git(self):
         (self.root / "rescue.img.xz").write_bytes(b"not an image")
         errors = load_gate().scan_repository(self.root)

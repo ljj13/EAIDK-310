@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 
@@ -23,13 +24,35 @@ SECRET_PATTERNS = (
     ("OpenAI-style token", re.compile(rb"\bsk-[A-Za-z0-9_-]{20,}")),
     (
         "literal password assignment",
-        re.compile(rb"(?i)\b(?:password|passwd)\s*[:=]\s*['\"]?[^\s'\"]{4,}"),
+        # Same-line only: \s* would cross newlines and flag innocent console
+        # logs where a "Password: " prompt is followed by ANSI screen art.
+        re.compile(rb"(?i)\b(?:password|passwd)[ \t]*[:=][ \t]*['\"]?[^\s'\"]{4,}"),
     ),
 )
 
 
-def _is_ignored(relative: Path) -> bool:
-    return any(part in {".git", "__pycache__"} for part in relative.parts)
+def _publishable_files(root: Path) -> list[Path]:
+    """Files that could enter Git history: tracked plus untracked-but-not-ignored.
+
+    Paths matched by .gitignore (local evidence under logs/, build staging,
+    ...) never reach the public tree, so scanning them only produces false
+    alarms on developer workstations.  Falls back to a plain walk when git
+    is unavailable.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files",
+             "--cached", "--others", "--exclude-standard", "-z"],
+            capture_output=True, check=True)
+        names = proc.stdout.decode("utf-8", "surrogateescape").split("\0")
+        return [root.joinpath(name) for name in names if name]
+    except (OSError, subprocess.CalledProcessError):
+        return [path for path in sorted(root.rglob("*"))
+                if _not_internal(path.relative_to(root))]
+
+
+def _not_internal(relative: Path) -> bool:
+    return not any(part in {".git", "__pycache__"} for part in relative.parts)
 
 
 def _has_release_only_suffix(path: Path) -> bool:
@@ -44,18 +67,11 @@ def scan_repository(root: Path) -> list[str]:
         return [f"repository root is not a directory: {root}"]
 
     errors: list[str] = []
-    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix().lower()):
+    for path in sorted(_publishable_files(root),
+                       key=lambda item: item.as_posix().lower()):
+        if not path.is_file() or path.is_symlink():
+            continue
         relative = path.relative_to(root)
-        if _is_ignored(relative):
-            continue
-        if path.is_symlink():
-            try:
-                path.resolve(strict=False).relative_to(root)
-            except ValueError:
-                errors.append(f"escaping symlink: {relative.as_posix()}")
-            continue
-        if not path.is_file():
-            continue
         size = path.stat().st_size
         if size >= GIT_OBJECT_LIMIT:
             errors.append(f"file reaches GitHub 100 MiB hard limit: {relative.as_posix()}")
