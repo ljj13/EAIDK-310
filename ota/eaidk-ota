@@ -1594,6 +1594,12 @@ def _promote_extlinux_default(boot: pathlib.Path, release: str) -> str:
     image = boot / f"Image-{release}"
     initrd = boot / f"uInitrd-{release}"
     dtbs = sorted((boot / "dtb" / "rockchip").glob(f"*-{release}.dtb"))
+    if not dtbs and "-eaidk310-" in release:
+        # bundle DTBs are named <board>-<version>-<variant>.dtb while the
+        # kernel release is <version>-eaidk310-<variant>
+        variant = release.split("-eaidk310-", 1)[1]
+        dtbs = sorted((boot / "dtb" / "rockchip").glob(f"*-{variant}.dtb"))
+        dtbs = [d for d in dtbs if release.split("-eaidk310-", 1)[0] in d.name]
     if not image.is_file() or not initrd.is_file() or not dtbs:
         raise ValueError(f"committed release files missing on /boot: {release}")
     append = (current.get("append") or "").strip()
