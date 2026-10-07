@@ -1577,6 +1577,43 @@ def cmd_arm(args) -> int:
     return cmd_try(args)
 
 
+def _promote_extlinux_default(boot: pathlib.Path, release: str) -> str:
+    """Commit = promotion: append the committed release as a stable
+    extlinux entry (when absent) and flip the default to it.
+
+    Until P9 this flip was missing - it never surfaced because every
+    promoted candidate so far shared the stable identity.  Atomic write
+    with readback validation; raises before any bootstate mutation.
+    """
+    conf = boot / "extlinux" / "extlinux.conf"
+    text = conf.read_text()
+    label = f"rockchip-kernel-{release}"
+    current = current_default_entry(boot)
+    if current.get("default") == label and f"label {label}\n" in text:
+        return label
+    image = boot / f"Image-{release}"
+    initrd = boot / f"uInitrd-{release}"
+    dtbs = sorted((boot / "dtb" / "rockchip").glob(f"*-{release}.dtb"))
+    if not image.is_file() or not initrd.is_file() or not dtbs:
+        raise ValueError(f"committed release files missing on /boot: {release}")
+    append = (current.get("append") or "").strip()
+    if not append:
+        raise ValueError("stable extlinux default entry has no APPEND line")
+    if f"label {label}\n" not in text:
+        entry = (f"\n\nlabel {label}\n"
+                 f"    LINUX /Image-{release}\n"
+                 f"    FDT /dtb/rockchip/{dtbs[0].name}\n"
+                 f"    INITRD /uInitrd-{release}\n"
+                 f"    APPEND {append}\n")
+        text = text.rstrip("\n") + "\n" + entry
+    text = re.sub(r"(?m)^default .*$", f"default {label}", text, count=1)
+    atomic_write(conf, text)
+    check = current_default_entry(boot)
+    if check.get("default") != label:
+        raise ValueError("extlinux promotion readback failed")
+    return label
+
+
 def cmd_commit(args) -> int:
     state = StateStore(pathlib.Path(args.state_dir))
     data = state.read()
@@ -1587,14 +1624,24 @@ def cmd_commit(args) -> int:
     if refusal is not None:
         return refusal
     try:
+        # flip the extlinux default BEFORE clearing the bootstate: if this
+        # fails the trial machinery stays intact and the board keeps
+        # booting the previous stable on the next plain reboot.
+        promoted = _promote_extlinux_default(pathlib.Path(args.boot_dir),
+                                             data.get("release"))
+    except (OSError, ValueError) as exc:
+        return fail_exit(EXIT_ERROR, f"commit promotion failed: {exc}")
+    try:
         bootstate = backend.clear()
     except BackendError as exc:
         return fail_exit(EXIT_ERROR, str(exc))
     state.write("COMMITTED", release=data.get("release"),
                 bundle_sha256=data.get("bundle_sha256"),
                 backend=backend.name, bootstate=bootstate,
+                promoted_default=promoted,
                 note="bootcount cleared: candidate is the new stable default")
     print(f"candidate committed via {backend.name}; "
+          f"extlinux default -> {promoted}; "
           "bootstate cleared (bootcount=0, upgrade_available=0)")
     return EXIT_OK
 
