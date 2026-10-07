@@ -68,7 +68,12 @@ class DeviceTreeInvariantTests(unittest.TestCase):
         pwrseq = re.search(r"(?s)sdio_pwrseq: sdio-pwrseq\s*\{(.*?)\n\s*\};", text)
         self.assertIsNotNone(pwrseq)
         self.assertNotIn("ext_clock", pwrseq.group(1))
-        self.assertNotIn("post-power-on-delay", pwrseq.group(1))
+        # P9 root cause (docs/P9-WIRELESS-BASELINE.md): the CYW43455 needs
+        # ~50 ms after WL_REG_ON before the first CMD5; without the delay
+        # every enumeration attempt loses the settle race (-110).  The board
+        # DTS is mirror-shared across kernel trees, so the rescue kernel
+        # carries the same fix.
+        self.assertIn("post-power-on-delay-ms = <100>;", pwrseq.group(1))
         self.assertRegex(
             text, r"(?s)&spi0\s*\{\s*status\s*=\s*\"disabled\";\s*\};"
         )
