@@ -1,0 +1,28 @@
+2026-10-07T20:37:48Z n=1 temp_mC=52916 freq_khz=1296000 load=0.16 mem_avail_kib=746948 swap_used_kib=0 disk_free_kib=2842800 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=0
+2026-10-07T20:38:13Z n=2 temp_mC=50000 freq_khz=1008000 load=0.42 mem_avail_kib=735628 swap_used_kib=0 disk_free_kib=2842796 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T20:53:08Z n=3 temp_mC=45454 freq_khz=1008000 load=0.09 mem_avail_kib=796268 swap_used_kib=0 disk_free_kib=2842792 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T21:08:58Z n=4 temp_mC=45000 freq_khz=1008000 load=0.00 mem_avail_kib=796504 swap_used_kib=0 disk_free_kib=2842792 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T21:24:08Z n=5 temp_mC=46363 freq_khz=1200000 load=0.01 mem_avail_kib=796808 swap_used_kib=0 disk_free_kib=2842788 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T21:39:18Z n=6 temp_mC=45000 freq_khz=1008000 load=0.04 mem_avail_kib=775712 swap_used_kib=0 disk_free_kib=2842784 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T21:54:48Z n=7 temp_mC=44545 freq_khz=1200000 load=0.00 mem_avail_kib=796260 swap_used_kib=0 disk_free_kib=2842784 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T22:09:58Z n=8 temp_mC=44545 freq_khz=1008000 load=0.09 mem_avail_kib=794332 swap_used_kib=0 disk_free_kib=2842780 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T22:25:08Z n=9 temp_mC=45909 freq_khz=1008000 load=0.01 mem_avail_kib=795416 swap_used_kib=0 disk_free_kib=2842780 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T22:40:38Z n=10 temp_mC=45454 freq_khz=1008000 load=0.00 mem_avail_kib=796680 swap_used_kib=0 disk_free_kib=2842780 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T22:56:08Z n=11 temp_mC=43636 freq_khz=1008000 load=0.00 mem_avail_kib=794864 swap_used_kib=0 disk_free_kib=2842776 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T23:11:18Z n=12 temp_mC=42727 freq_khz=1200000 load=0.02 mem_avail_kib=794316 swap_used_kib=0 disk_free_kib=2842768 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T23:26:43Z n=13 temp_mC=47727 freq_khz=1296000 load=0.01 mem_avail_kib=792856 swap_used_kib=0 disk_free_kib=2842768 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T23:41:58Z n=14 temp_mC=42727 freq_khz=1008000 load=0.00 mem_avail_kib=794968 swap_used_kib=0 disk_free_kib=2842768 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-07T23:57:08Z n=15 temp_mC=42272 freq_khz=1008000 load=0.00 mem_avail_kib=793384 swap_used_kib=0 disk_free_kib=2842768 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+2026-10-08T00:12:28Z n=16 temp_mC=42272 freq_khz=1200000 load=0.02 mem_avail_kib=795940 swap_used_kib=0 disk_free_kib=2842764 mmc_err=1 kwarn=31 failed_units=0 ts_state=Running ts_pong=1
+---PULSE
+2026-10-07T21:08:58Z pulse start
+2026-10-07T21:08:58Z pulse v6 ok
+2026-10-07T21:18:58Z pulse end
+2026-10-07T22:09:58Z pulse start
+2026-10-07T22:09:58Z pulse v6 ok
+2026-10-07T22:19:58Z pulse end
+2026-10-07T23:11:18Z pulse start
+2026-10-07T23:11:18Z pulse v6 ok
+2026-10-07T23:21:18Z pulse end
+2026-10-08T00:12:28Z pulse start
+2026-10-08T00:12:28Z pulse v6 ok
